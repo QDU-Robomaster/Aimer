@@ -39,7 +39,7 @@ struct TrajectorySolution
 
 struct PredictedTarget
 {
-  TrackerTarget msg{};
+  SolveTrajectory::Target msg{};
 
   void Predict(double dt)
   {
@@ -232,11 +232,11 @@ Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app, Config c
 {
   LibXR::Topic::Domain tracker_domain("tracker");
   LibXR::Topic target_topic =
-      LibXR::Topic::FindOrCreate<TrackerTarget>("target", &tracker_domain);
+      LibXR::Topic::FindOrCreate<SolveTrajectory::Target>("target", &tracker_domain);
   auto target_callback = LibXR::Topic::Callback::Create(
       [](bool, Aimer* self, LibXR::RawData& data)
       {
-        auto* target_msg = reinterpret_cast<TrackerTarget*>(data.addr_);
+        auto* target_msg = reinterpret_cast<SolveTrajectory::Target*>(data.addr_);
         self->TargetCallback(*target_msg);
       },
       this);
@@ -340,7 +340,7 @@ bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw)
   return COMMAND_STABLE && GIMBAL_ALIGNED;
 }
 
-void Aimer::TargetCallback(TrackerTarget& target_msg)
+void Aimer::TargetCallback(SolveTrajectory::Target& target_msg)
 {
   const auto start_time = std::chrono::steady_clock::now();
 
