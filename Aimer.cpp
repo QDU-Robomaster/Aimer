@@ -143,8 +143,7 @@ class AimerCore
     }
 
     const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
-    if (!target.msg.jumped && std::abs(target.msg.v_yaw) <= cfg_.yaw_rate_threshold &&
-        !is_outpost)
+    if (std::abs(target.msg.v_yaw) <= cfg_.yaw_rate_threshold && !is_outpost)
     {
       int nearest_id = 0;
       double min_distance = std::numeric_limits<double>::max();
