@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "TrackerMath.hpp"
 #include "logger.hpp"
 
 namespace
@@ -22,6 +21,19 @@ constexpr double OUTPOST_LEAVING_ANGLE_DEG = 30.0;
 constexpr double NON_GYRO_MAX_DELTA_DEG = 60.0;
 constexpr int MAX_ITERATION_COUNT = 10;
 constexpr double FLY_TIME_CONVERGENCE_S = 0.001;
+
+double limit_rad(double angle)
+{
+  while (angle > PI)
+  {
+    angle -= 2.0 * PI;
+  }
+  while (angle < -PI)
+  {
+    angle += 2.0 * PI;
+  }
+  return angle;
+}
 
 struct AimPoint
 {
@@ -39,14 +51,14 @@ struct TrajectorySolution
 
 struct PredictedTarget
 {
-  TrackerTarget msg{};
+  SolveTrajectory::Target msg{};
 
   void Predict(double dt)
   {
     msg.position.x() += msg.velocity.x() * dt;
     msg.position.y() += msg.velocity.y() * dt;
     msg.position.z() += msg.velocity.z() * dt;
-    msg.yaw = TrackerMath::LimitRad(msg.yaw + msg.v_yaw * dt);
+    msg.yaw = limit_rad(msg.yaw + msg.v_yaw * dt);
   }
 
   std::vector<Eigen::Vector4d> GetArmorXYZAList() const
@@ -57,7 +69,7 @@ struct PredictedTarget
     for (int index = 0; index < msg.armors_num; ++index)
     {
       const double angle =
-          TrackerMath::LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
+          limit_rad(msg.yaw + index * 2.0 * PI / msg.armors_num);
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
       const double armor_x = msg.position.x() - radius * std::cos(angle);
@@ -131,8 +143,7 @@ class AimerCore
     }
 
     const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
-    if (!target.msg.jumped && std::abs(target.msg.v_yaw) <= cfg_.yaw_rate_threshold &&
-        !is_outpost)
+    if (std::abs(target.msg.v_yaw) <= cfg_.yaw_rate_threshold && !is_outpost)
     {
       int nearest_id = 0;
       double min_distance = std::numeric_limits<double>::max();
@@ -155,7 +166,7 @@ class AimerCore
     delta_angle_list.reserve(armor_xyza_list.size());
     for (const auto& xyza : armor_xyza_list)
     {
-      delta_angle_list.push_back(TrackerMath::LimitRad(xyza[3] - center_yaw));
+      delta_angle_list.push_back(limit_rad(xyza[3] - center_yaw));
     }
 
     if (std::abs(target.msg.v_yaw) <= cfg_.yaw_rate_threshold && !is_outpost)
@@ -232,11 +243,11 @@ Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app, Config c
 {
   LibXR::Topic::Domain tracker_domain("tracker");
   LibXR::Topic target_topic =
-      LibXR::Topic::FindOrCreate<TrackerTarget>("target", &tracker_domain);
+      LibXR::Topic::FindOrCreate<SolveTrajectory::Target>("target", &tracker_domain);
   auto target_callback = LibXR::Topic::Callback::Create(
       [](bool, Aimer* self, LibXR::RawData& data)
       {
-        auto* target_msg = reinterpret_cast<TrackerTarget*>(data.addr_);
+        auto* target_msg = reinterpret_cast<SolveTrajectory::Target*>(data.addr_);
         self->TargetCallback(*target_msg);
       },
       this);
@@ -328,9 +339,9 @@ bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw)
   last_fire_gimbal_yaw_rad_ = gimbal_yaw;
 
   last_fire_command_error_rad_ =
-      std::abs(TrackerMath::LimitRad(last_command_yaw_ - yaw));
+      std::abs(limit_rad(last_command_yaw_ - yaw));
   last_fire_gimbal_error_rad_ =
-      std::abs(TrackerMath::LimitRad(gimbal_yaw - last_command_yaw_));
+      std::abs(limit_rad(gimbal_yaw - last_command_yaw_));
 
   const bool COMMAND_STABLE = last_fire_command_error_rad_ < TOLERANCE * 2.0;
   const bool GIMBAL_ALIGNED = last_fire_gimbal_error_rad_ < TOLERANCE;
@@ -340,7 +351,7 @@ bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw)
   return COMMAND_STABLE && GIMBAL_ALIGNED;
 }
 
-void Aimer::TargetCallback(TrackerTarget& target_msg)
+void Aimer::TargetCallback(SolveTrajectory::Target& target_msg)
 {
   const auto start_time = std::chrono::steady_clock::now();
 
