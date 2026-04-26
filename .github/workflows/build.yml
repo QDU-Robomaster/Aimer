@@ -83,12 +83,12 @@ jobs:
       - name: Register dependency repos
         run: |
           rm -f Modules/modules.yaml
-          xrobot_add_mod qdu-future/Aimer@${{ github.ref_name }}
           xrobot_add_mod qdu-future/ArmorTracker@feat/tracker-sp-baseline-20260426
           xrobot_add_mod qdu-future/ArmorDetector@feat/tracker-sp-baseline-20260426
           xrobot_add_mod qdu-future/CameraBase@feat/camerainfo-staticinfo-cxx20-20260420
           xrobot_add_mod qdu-future/WebotsCamera@feat/tracker-sp-baseline-20260426
           xrobot_add_mod qdu-future/CameraFrameSync@feat/camera-frame-sync-mode1-20260421
+          xrobot_add_mod qdu-future/Aimer@${{ github.ref_name }}
           cat Modules/modules.yaml
 
       - name: Sync dependency repos
