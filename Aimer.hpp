@@ -101,7 +101,7 @@ class Aimer : public LibXR::Application
 
   AimerMetrics metrics_msg_{};
   LibXR::EulerAngle<float> target_euler_msg_{};
-  ArmorTracker::Send send_msg_{};
+  ArmorTrackerSend send_msg_{};
 
   LibXR::Topic::Domain aimer_domain_ = LibXR::Topic::Domain("aimer");
   LibXR::Topic metrics_topic_ =
@@ -111,5 +111,5 @@ class Aimer : public LibXR::Application
   LibXR::Topic target_euler_topic_ =
       LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>), &tracker_domain_);
   LibXR::Topic send_topic_ =
-      LibXR::Topic("send", sizeof(ArmorTracker::Send), &tracker_domain_);
+      LibXR::Topic("send", sizeof(ArmorTrackerSend), &tracker_domain_);
 };
