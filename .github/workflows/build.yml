@@ -86,7 +86,7 @@ jobs:
           xrobot_add_mod qdu-future/WebotsCamera@master
           xrobot_add_mod qdu-future/CameraFrameSync@master
           xrobot_add_mod qdu-future/ArmorDetector@master
-          xrobot_add_mod qdu-future/ArmorTracker@codex/armortracker-mainline-cleanup-20260429
+          xrobot_add_mod qdu-future/ArmorTracker@master
           xrobot_add_mod qdu-future/Aimer@${{ env.XR_MODULE_REF }}
           cat Modules/modules.yaml
 
