@@ -1,12 +1,9 @@
-# CMakeLists.txt for Aimer
+# Aimer 运行时模块
 
 target_include_directories(xr PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
-file(GLOB MODULE_AIMER_SRC CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/*.cxx"
-  "${CMAKE_CURRENT_LIST_DIR}/*.cc"
-  "${CMAKE_CURRENT_LIST_DIR}/*.c"
+set(MODULE_AIMER_SRC
+  "${CMAKE_CURRENT_LIST_DIR}/Aimer.cpp"
 )
 
 target_sources(xr PRIVATE ${MODULE_AIMER_SRC})

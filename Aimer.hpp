@@ -27,7 +27,7 @@ depends:
 
 #include <Eigen/Dense>
 
-#include <chrono>
+#include <atomic>
 #include <cstdint>
 
 #include "ArmorTracker.hpp"
@@ -80,12 +80,12 @@ class Aimer : public LibXR::Application
  private:
   void BulletSpeedCallback(float bullet_speed_msg);
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
-  void TargetCallback(SolveTrajectory::Target& target_msg);
+  void TargetCallback(const SolveTrajectory::Target& target_msg);
   bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw);
 
  private:
   Config cfg_{};
-  double bullet_speed_{23.0};
+  std::atomic<double> bullet_speed_{23.0};
   int lock_id_{-1};
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
   uint64_t frame_index_{0};
@@ -101,7 +101,7 @@ class Aimer : public LibXR::Application
 
   AimerMetrics metrics_msg_{};
   LibXR::EulerAngle<float> target_euler_msg_{};
-  ArmorTracker::Send send_msg_{};
+  ArmorTrackerSend send_msg_{};
 
   LibXR::Topic::Domain aimer_domain_ = LibXR::Topic::Domain("aimer");
   LibXR::Topic metrics_topic_ =
@@ -111,5 +111,5 @@ class Aimer : public LibXR::Application
   LibXR::Topic target_euler_topic_ =
       LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>), &tracker_domain_);
   LibXR::Topic send_topic_ =
-      LibXR::Topic("send", sizeof(ArmorTracker::Send), &tracker_domain_);
+      LibXR::Topic("send", sizeof(ArmorTrackerSend), &tracker_domain_);
 };

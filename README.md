@@ -1,15 +1,27 @@
 # Aimer
 
-`Aimer` 负责从 `tracker/target` 中选择可击打装甲板，并使用迭代弹道求解输出最终 `yaw/pitch`。
+`Aimer` 是 tracker 后面的瞄点与弹道模块。它不订阅图像和 IMU，只在收到
+`tracker/target` 后选择要打的装甲板，预测目标运动，解算最终 `yaw/pitch`。
 
-## Runtime Role
+## 数据流
 
-- 输入: `tracker/target`、`referee/bullet_speed`
-- 输出: `tracker/send`、`tracker/target_eulr`、`aimer/metrics`
+- 输入 `tracker/target`：`ArmorTracker` 发布的 `SolveTrajectory::Target`。
+- 输入 `referee/bullet_speed`：裁判系统或上游估计的当前弹速，异常或过低时回退到默认弹速。
+- 输入 `gimbal/rotation`：云台当前姿态，只用于自动开火判定。
+- 输出 `tracker/target_eulr`：兼容旧下游的云台角度 topic，名称保持历史拼写。
+- 输出 `tracker/send`：兼容旧下游的瞄点、角度和开火标志。
+- 输出 `aimer/metrics`：调试统计，包括是否有效、迭代次数、弹速、飞行时间和本模块处理耗时。
 
-## Algorithm Notes
+## 策略
 
-- 使用 `target.jumped` 决定是否直接锁定当前装甲板
-- 按 `yaw_rate_threshold` 切换低速目标和高速旋转目标分支
-- 最多 10 次飞行时间迭代，收敛阈值 `0.001 s`
-- `is_fire` 兼容输出使用 `sp_vision/shooter.cpp` 风格容差判定，不再走旧 `ShouldFire`
+- 每个 `tracker/target` 回调都会发布一组输出；目标丢失或弹道不可解时输出默认空命令。
+- 低速普通目标直接选择距离最近的装甲板，避免无意义切面。
+- 高速旋转目标和前哨站先按配置延迟预测目标，再按进入角、离开角选择可击打装甲板。
+- 弹道飞行时间最多迭代 10 次，收敛阈值为 `0.001 s`。
+- `is_fire` 需要命令 yaw 稳定且云台 yaw 已对齐；没有 `gimbal/rotation` 时不会自动开火。
+
+## 边界
+
+- Aimer 不负责目标跟踪，也不修改同步链路。
+- Aimer 不依赖旧版跳变标志或额外序号，当前输入以 `SolveTrajectory::Target` 字段为准。
+- `latency_ms` 是本模块回调处理耗时，不是传感器采集时间。
