@@ -37,6 +37,7 @@ double LimitRad(double angle)
 struct AimPoint
 {
   bool valid{false};
+  bool shootable{false};
   int armor_index{0};
   Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};
 };
@@ -71,8 +72,8 @@ struct PredictedTarget
           LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
-      const double armor_x = msg.position.x() - radius * std::cos(angle);
-      const double armor_y = msg.position.y() - radius * std::sin(angle);
+      const double armor_x = msg.position.x() + radius * std::cos(angle);
+      const double armor_y = msg.position.y() + radius * std::sin(angle);
       const double armor_z = use_length_height ? msg.position.z() + msg.dz
                                                : msg.position.z();
       armor_xyza_list.push_back({armor_x, armor_y, armor_z, angle});
@@ -146,7 +147,7 @@ AimPoint ChooseNearestArmor(const std::vector<Eigen::Vector4d>& armor_xyza_list,
   }
 
   lock_id = nearest_index;
-  return {true, nearest_index, armor_xyza_list[nearest_index]};
+  return {true, true, nearest_index, armor_xyza_list[nearest_index]};
 }
 
 AimPoint ChooseRotatingArmor(const Aimer::Config& cfg, const PredictedTarget& target,
@@ -173,12 +174,29 @@ AimPoint ChooseRotatingArmor(const Aimer::Config& cfg, const PredictedTarget& ta
         (target.msg.v_yaw < 0.0 && delta_angle > -leaving_angle))
     {
       lock_id = index;
-      return {true, index, armor_xyza_list[index]};
+      return {true, true, index, armor_xyza_list[index]};
     }
   }
 
-  lock_id = -1;
-  return {};
+  if (lock_id >= 0 && lock_id < static_cast<int>(armor_xyza_list.size()))
+  {
+    return {true, false, lock_id, armor_xyza_list[lock_id]};
+  }
+
+  int nearest_index = 0;
+  double nearest_distance = std::numeric_limits<double>::max();
+  for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
+  {
+    const double distance =
+        std::hypot(armor_xyza_list[index][0], armor_xyza_list[index][1]);
+    if (distance < nearest_distance)
+    {
+      nearest_distance = distance;
+      nearest_index = index;
+    }
+  }
+  lock_id = nearest_index;
+  return {true, false, nearest_index, armor_xyza_list[nearest_index]};
 }
 
 AimPoint ChooseAimPoint(const Aimer::Config& cfg, const PredictedTarget& target,
@@ -341,6 +359,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   }
 
   send_msg_ = {};
+  send_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   target_euler_msg_ = LibXR::EulerAngle<float>();
 
   double bullet_speed = bullet_speed_.load(std::memory_order_relaxed);
@@ -445,7 +464,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   target_euler_msg_.Pitch() = static_cast<float>(pitch);
   target_euler_msg_.Yaw() = static_cast<float>(yaw);
 
-  send_msg_.is_fire = ShouldAutoFire(final_xyz, yaw);
+  send_msg_.is_fire = debug_aim_point.shootable && ShouldAutoFire(final_xyz, yaw);
   send_msg_.position.x() = final_xyz.x();
   send_msg_.position.y() = final_xyz.y();
   send_msg_.position.z() = final_xyz.z();
