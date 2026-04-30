@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <limits>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -20,6 +19,7 @@ constexpr double OUTPOST_LEAVING_ANGLE_DEG = 30.0;
 constexpr int MAX_ITERATION_COUNT = 10;
 constexpr double FLY_TIME_CONVERGENCE_S = 0.001;
 constexpr double MIN_HORIZONTAL_DISTANCE_M = 1e-4;
+constexpr double MIN_SCORE_NORMALIZER = 1e-6;
 
 double LimitRad(double angle)
 {
@@ -39,6 +39,7 @@ struct AimPoint
   bool valid{false};
   int armor_index{0};
   Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};
+  double score{0.0};
 };
 
 struct TrajectorySolution
@@ -129,24 +130,78 @@ std::string_view ArmorNumberToString(ArmorNumber number)
   return ARMOR_NUMBER_NAMES[index];
 }
 
-AimPoint ChooseNearestArmor(const std::vector<Eigen::Vector4d>& armor_xyza_list,
+struct AimCandidate
+{
+  int armor_index{0};
+  Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};
+  double score{0.0};
+};
+
+enum class CandidatePriority
+{
+  LOWEST_SCORE,
+  INPUT_ORDER,
+};
+
+AimPoint SelectWithSwitchDeadzone(const std::vector<AimCandidate>& candidates,
+                                  int& lock_id, double switch_score_deadzone,
+                                  CandidatePriority priority)
+{
+  if (candidates.empty())
+  {
+    lock_id = -1;
+    return {};
+  }
+
+  auto best_it = candidates.begin();
+  if (priority == CandidatePriority::LOWEST_SCORE)
+  {
+    best_it = std::min_element(
+        candidates.begin(), candidates.end(),
+        [](const AimCandidate& lhs, const AimCandidate& rhs)
+        {
+          if (lhs.score != rhs.score)
+          {
+            return lhs.score < rhs.score;
+          }
+          return lhs.armor_index < rhs.armor_index;
+        });
+  }
+
+  const auto locked_it = std::find_if(
+      candidates.begin(), candidates.end(),
+      [&](const AimCandidate& candidate) { return candidate.armor_index == lock_id; });
+
+  const AimCandidate* selected = &(*best_it);
+  if (locked_it != candidates.end() && best_it->armor_index != lock_id &&
+      best_it->score + std::max(0.0, switch_score_deadzone) >= locked_it->score)
+  {
+    selected = &(*locked_it);
+  }
+
+  lock_id = selected->armor_index;
+  return {true, selected->armor_index, selected->xyza, selected->score};
+}
+
+AimPoint ChooseNearestArmor(const Aimer::Config& cfg,
+                            const std::vector<Eigen::Vector4d>& armor_xyza_list,
                             int& lock_id)
 {
-  int nearest_index = 0;
-  double nearest_distance = std::numeric_limits<double>::max();
+  const double normalizer = std::max(cfg.judge_distance, MIN_SCORE_NORMALIZER);
+  std::vector<AimCandidate> candidates;
+  candidates.reserve(armor_xyza_list.size());
   for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
   {
     const double distance =
         std::hypot(armor_xyza_list[index][0], armor_xyza_list[index][1]);
-    if (distance < nearest_distance)
+    if (std::isfinite(distance))
     {
-      nearest_distance = distance;
-      nearest_index = index;
+      candidates.push_back({index, armor_xyza_list[index], distance / normalizer});
     }
   }
 
-  lock_id = nearest_index;
-  return {true, nearest_index, armor_xyza_list[nearest_index]};
+  return SelectWithSwitchDeadzone(candidates, lock_id, cfg.switch_score_deadzone,
+                                  CandidatePriority::LOWEST_SCORE);
 }
 
 AimPoint ChooseRotatingArmor(const Aimer::Config& cfg, const PredictedTarget& target,
@@ -161,6 +216,8 @@ AimPoint ChooseRotatingArmor(const Aimer::Config& cfg, const PredictedTarget& ta
   const double leaving_angle =
       (is_outpost ? OUTPOST_LEAVING_ANGLE_DEG : cfg.leaving_angle) * DEG2RAD;
 
+  std::vector<AimCandidate> candidates;
+  candidates.reserve(armor_xyza_list.size());
   for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
   {
     const double delta_angle = LimitRad(armor_xyza_list[index][3] - center_yaw);
@@ -172,13 +229,14 @@ AimPoint ChooseRotatingArmor(const Aimer::Config& cfg, const PredictedTarget& ta
     if ((target.msg.v_yaw > 0.0 && delta_angle < leaving_angle) ||
         (target.msg.v_yaw < 0.0 && delta_angle > -leaving_angle))
     {
-      lock_id = index;
-      return {true, index, armor_xyza_list[index]};
+      const double score = std::abs(delta_angle) /
+                           std::max(coming_angle, MIN_SCORE_NORMALIZER);
+      candidates.push_back({index, armor_xyza_list[index], score});
     }
   }
 
-  lock_id = -1;
-  return {};
+  return SelectWithSwitchDeadzone(candidates, lock_id, cfg.switch_score_deadzone,
+                                  CandidatePriority::INPUT_ORDER);
 }
 
 AimPoint ChooseAimPoint(const Aimer::Config& cfg, const PredictedTarget& target,
@@ -195,7 +253,7 @@ AimPoint ChooseAimPoint(const Aimer::Config& cfg, const PredictedTarget& target,
   const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
   if (!is_outpost && std::abs(target.msg.v_yaw) <= cfg.yaw_rate_threshold)
   {
-    return ChooseNearestArmor(armor_xyza_list, lock_id);
+    return ChooseNearestArmor(cfg, armor_xyza_list, lock_id);
   }
 
   return ChooseRotatingArmor(cfg, target, armor_xyza_list, lock_id);
@@ -366,10 +424,12 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   PredictedTarget base_target{target_msg};
   base_target.Predict(delay_time);
 
-  AimPoint debug_aim_point = ChooseAimPoint(cfg_, base_target, lock_id_);
+  int aim_lock_id = lock_id_;
+  AimPoint debug_aim_point = ChooseAimPoint(cfg_, base_target, aim_lock_id);
 
   if (!debug_aim_point.valid)
   {
+    lock_id_ = aim_lock_id;
     publish_outputs();
     return;
   }
@@ -381,6 +441,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (trajectory.unsolvable)
   {
+    lock_id_ = aim_lock_id;
     publish_outputs();
     return;
   }
@@ -389,13 +450,14 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   double prev_fly_time = trajectory.fly_time;
   metrics_msg_.selected_armor_index =
       static_cast<uint32_t>(std::max(debug_aim_point.armor_index, 0));
+  metrics_msg_.selected_armor_score = debug_aim_point.score;
 
   for (int iteration = 0; iteration < MAX_ITERATION_COUNT; ++iteration)
   {
     PredictedTarget iter_target = base_target;
     iter_target.Predict(prev_fly_time);
 
-    AimPoint aim_point = ChooseAimPoint(cfg_, iter_target, lock_id_);
+    AimPoint aim_point = ChooseAimPoint(cfg_, iter_target, aim_lock_id);
     if (!aim_point.valid)
     {
       debug_aim_point = {};
@@ -405,6 +467,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
     debug_aim_point = aim_point;
     metrics_msg_.selected_armor_index =
         static_cast<uint32_t>(std::max(debug_aim_point.armor_index, 0));
+    metrics_msg_.selected_armor_score = debug_aim_point.score;
 
     const Eigen::Vector3d xyz = debug_aim_point.xyza.head<3>();
     const double horizontal_distance = std::hypot(xyz.x(), xyz.y());
@@ -426,10 +489,12 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (!debug_aim_point.valid || trajectory.unsolvable)
   {
+    lock_id_ = aim_lock_id;
     publish_outputs();
     return;
   }
 
+  lock_id_ = aim_lock_id;
   metrics_msg_.valid = true;
   metrics_msg_.converged = converged;
   metrics_msg_.fly_time_s = trajectory.fly_time;
@@ -459,10 +524,11 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   if ((frame_index_ % 30U) == 0U)
   {
     XR_LOG_INFO(
-        "Aimer frame=%llu target=%s valid=%d converged=%d fire=%d iter=%u delay_s=%.3f fly_s=%.3f yaw=%.3f gimbal_yaw=%.3f cmd_err_deg=%.2f gimbal_err_deg=%.2f tol_deg=%.2f latency_ms=%.2f",
+        "Aimer frame=%llu target=%s valid=%d converged=%d fire=%d selected=%u score=%.3f iter=%u delay_s=%.3f fly_s=%.3f yaw=%.3f gimbal_yaw=%.3f cmd_err_deg=%.2f gimbal_err_deg=%.2f tol_deg=%.2f latency_ms=%.2f",
         static_cast<unsigned long long>(frame_index_),
         ArmorNumberToString(target_msg.id).data(), metrics_msg_.valid ? 1 : 0,
         metrics_msg_.converged ? 1 : 0, metrics_msg_.is_fire ? 1 : 0,
+        metrics_msg_.selected_armor_index, metrics_msg_.selected_armor_score,
         metrics_msg_.iteration_count,
         metrics_msg_.delay_time_s, metrics_msg_.fly_time_s, metrics_msg_.yaw,
         last_fire_gimbal_yaw_rad_, last_fire_command_error_rad_ / DEG2RAD,

@@ -18,6 +18,7 @@ constructor_args:
     second_tolerance: 2.0
     judge_distance: 2.0
     auto_fire: true
+    switch_score_deadzone: 0.05
 template_args: []
 required_hardware: []
 depends:
@@ -53,6 +54,7 @@ class Aimer : public LibXR::Application
     double second_tolerance{2.0};
     double judge_distance{2.0};
     bool auto_fire{true};
+    double switch_score_deadzone{0.05};
   };
 
   struct AimerMetrics
@@ -63,6 +65,7 @@ class Aimer : public LibXR::Application
     bool converged{false};
     uint32_t iteration_count{0};
     uint32_t selected_armor_index{0};
+    double selected_armor_score{0.0};
     ArmorNumber target_id{ArmorNumber::INVALID};
     double latency_ms{0.0};
     double bullet_speed{0.0};
