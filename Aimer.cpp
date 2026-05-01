@@ -20,6 +20,16 @@ constexpr double OUTPOST_LEAVING_ANGLE_DEG = 30.0;
 constexpr int MAX_ITERATION_COUNT = 10;
 constexpr double FLY_TIME_CONVERGENCE_S = 0.001;
 constexpr double MIN_HORIZONTAL_DISTANCE_M = 1e-4;
+constexpr double PLAN_DEFAULT_DT_S = 0.01;
+constexpr double PLAN_MIN_DT_S = 0.001;
+constexpr double PLAN_MAX_DT_S = 0.2;
+constexpr double PLAN_MAX_RATE_RAD_S = 30.0;
+constexpr double PLAN_MAX_ACC_RAD_S2 = 300.0;
+constexpr int PLAN_HALF_HORIZON = 50;
+constexpr int PLAN_HORIZON = PLAN_HALF_HORIZON * 2;
+constexpr int PLAN_SHOOT_OFFSET = 2;
+
+using PlanTrajectory = Eigen::Matrix<double, 4, PLAN_HORIZON>;
 
 double LimitRad(double angle)
 {
@@ -32,6 +42,19 @@ double LimitRad(double angle)
     angle += 2.0 * PI;
   }
   return angle;
+}
+
+double ClampSymmetric(double value, double limit)
+{
+  if (value > limit)
+  {
+    return limit;
+  }
+  if (value < -limit)
+  {
+    return -limit;
+  }
+  return value;
 }
 
 struct AimPoint
@@ -47,6 +70,14 @@ struct TrajectorySolution
   bool unsolvable{false};
   double fly_time{0.0};
   double pitch{0.0};
+};
+
+struct AimCommand
+{
+  bool valid{false};
+  Eigen::Vector2d yaw_pitch{Eigen::Vector2d::Zero()};
+  double fly_time{0.0};
+  AimPoint aim_point{};
 };
 
 struct PredictedTarget
@@ -215,11 +246,105 @@ AimPoint ChooseAimPoint(const Aimer::Config& cfg, const PredictedTarget& target,
 
   return ChooseRotatingArmor(cfg, target, armor_xyza_list, lock_id);
 }
+
+AimCommand ComputeNearestAimCommand(const Aimer::Config& cfg,
+                                    const PredictedTarget& target,
+                                    double bullet_speed)
+{
+  AimCommand command;
+  const auto armor_xyza_list = target.GetArmorXYZAList();
+  if (armor_xyza_list.empty())
+  {
+    return command;
+  }
+
+  int nearest_lock_id = -1;
+  command.aim_point = ChooseNearestArmor(armor_xyza_list, nearest_lock_id);
+
+  const Eigen::Vector3d xyz = command.aim_point.xyza.head<3>();
+  const double horizontal_distance = std::hypot(xyz.x(), xyz.y());
+  const auto trajectory = SolveTrajectoryPitch(bullet_speed, horizontal_distance, xyz.z());
+  if (trajectory.unsolvable)
+  {
+    return command;
+  }
+
+  command.valid = true;
+  command.fly_time = trajectory.fly_time;
+  command.yaw_pitch.x() =
+      LimitRad(std::atan2(xyz.y(), xyz.x()) + cfg.yaw_offset * DEG2RAD);
+  command.yaw_pitch.y() = -(trajectory.pitch + cfg.pitch_offset * DEG2RAD);
+  return command;
+}
+
+bool BuildReferenceTrajectory(const Aimer::Config& cfg,
+                              const SolveTrajectory::Target& target_msg,
+                              double delay_time, double bullet_speed,
+                              PlanTrajectory& trajectory, double& yaw0)
+{
+  PredictedTarget center_target{target_msg};
+  center_target.Predict(delay_time);
+
+  const auto rough_aim = ComputeNearestAimCommand(cfg, center_target, bullet_speed);
+  if (!rough_aim.valid)
+  {
+    return false;
+  }
+
+  center_target.Predict(rough_aim.fly_time);
+  const auto center_aim = ComputeNearestAimCommand(cfg, center_target, bullet_speed);
+  if (!center_aim.valid)
+  {
+    return false;
+  }
+  yaw0 = center_aim.yaw_pitch.x();
+
+  PredictedTarget moving_target = center_target;
+  moving_target.Predict(-PLAN_DEFAULT_DT_S * (PLAN_HALF_HORIZON + 1));
+  auto yaw_pitch_last = ComputeNearestAimCommand(cfg, moving_target, bullet_speed);
+  if (!yaw_pitch_last.valid)
+  {
+    return false;
+  }
+
+  moving_target.Predict(PLAN_DEFAULT_DT_S);
+  auto yaw_pitch = ComputeNearestAimCommand(cfg, moving_target, bullet_speed);
+  if (!yaw_pitch.valid)
+  {
+    return false;
+  }
+
+  for (int index = 0; index < PLAN_HORIZON; ++index)
+  {
+    moving_target.Predict(PLAN_DEFAULT_DT_S);
+    auto yaw_pitch_next = ComputeNearestAimCommand(cfg, moving_target, bullet_speed);
+    if (!yaw_pitch_next.valid)
+    {
+      return false;
+    }
+
+    const double yaw_vel =
+        LimitRad(yaw_pitch_next.yaw_pitch.x() - yaw_pitch_last.yaw_pitch.x()) /
+        (2.0 * PLAN_DEFAULT_DT_S);
+    const double pitch_vel =
+        (yaw_pitch_next.yaw_pitch.y() - yaw_pitch_last.yaw_pitch.y()) /
+        (2.0 * PLAN_DEFAULT_DT_S);
+    trajectory.col(index) << LimitRad(yaw_pitch.yaw_pitch.x() - yaw0), yaw_vel,
+        yaw_pitch.yaw_pitch.y(), pitch_vel;
+
+    yaw_pitch_last = yaw_pitch;
+    yaw_pitch = yaw_pitch_next;
+  }
+
+  return true;
+}
 }  // namespace
 
 Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app, Config cfg)
     : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
 {
+  SetupGimbalPlanSolvers();
+
   LibXR::Topic::Domain tracker_domain("tracker");
   LibXR::Topic target_topic =
       LibXR::Topic::FindOrCreate<SolveTrajectory::Target>("target", &tracker_domain);
@@ -374,6 +499,234 @@ void Aimer::BuildTrajectoryMessage(const SolveTrajectory::Target& target_msg,
   }
 }
 
+void Aimer::SetupGimbalPlanSolvers()
+{
+  planner_ready_ = false;
+  if (!cfg_.enable_mpc_plan)
+  {
+    XR_LOG_INFO("Aimer TinyMPC gimbal_plan disabled by config");
+    return;
+  }
+
+  auto setup_solver = [this](TinySolver** solver, double max_acc, double q_pos,
+                             double q_vel, double r_acc) -> bool
+  {
+    Eigen::MatrixXd a(2, 2);
+    a << 1.0, PLAN_DEFAULT_DT_S, 0.0, 1.0;
+    Eigen::MatrixXd b(2, 1);
+    b << 0.0, PLAN_DEFAULT_DT_S;
+    Eigen::VectorXd f(2);
+    f << 0.0, 0.0;
+    Eigen::MatrixXd q(2, 2);
+    q << q_pos, 0.0, 0.0, q_vel;
+    Eigen::MatrixXd r(1, 1);
+    r << r_acc;
+
+    if (tiny_setup(solver, a, b, f, q, r, 1.0, 2, 1, PLAN_HORIZON, 0) != 0)
+    {
+      return false;
+    }
+
+    Eigen::MatrixXd x_min =
+        Eigen::MatrixXd::Constant(2, PLAN_HORIZON, -1.0e17);
+    Eigen::MatrixXd x_max = Eigen::MatrixXd::Constant(2, PLAN_HORIZON, 1.0e17);
+    Eigen::MatrixXd u_min =
+        Eigen::MatrixXd::Constant(1, PLAN_HORIZON - 1, -max_acc);
+    Eigen::MatrixXd u_max =
+        Eigen::MatrixXd::Constant(1, PLAN_HORIZON - 1, max_acc);
+    if (tiny_set_bound_constraints(*solver, x_min, x_max, u_min, u_max) != 0)
+    {
+      return false;
+    }
+
+    (*solver)->settings->max_iter = cfg_.mpc_max_iter;
+    return true;
+  };
+
+  const bool yaw_ok =
+      setup_solver(&yaw_solver_, cfg_.max_yaw_acc, cfg_.q_yaw_pos, cfg_.q_yaw_vel,
+                   cfg_.r_yaw_acc);
+  const bool pitch_ok = setup_solver(&pitch_solver_, cfg_.max_pitch_acc,
+                                     cfg_.q_pitch_pos, cfg_.q_pitch_vel,
+                                     cfg_.r_pitch_acc);
+  planner_ready_ = yaw_ok && pitch_ok;
+  if (planner_ready_)
+  {
+    XR_LOG_INFO(
+        "Aimer TinyMPC gimbal_plan enabled horizon=%d dt=%.3f max_yaw_acc=%.1f max_pitch_acc=%.1f iter=%d",
+        PLAN_HORIZON, PLAN_DEFAULT_DT_S, cfg_.max_yaw_acc, cfg_.max_pitch_acc,
+        cfg_.mpc_max_iter);
+  }
+  else
+  {
+    XR_LOG_WARN("Aimer TinyMPC gimbal_plan setup failed; finite-difference fallback active");
+  }
+}
+
+void Aimer::ResetGimbalPlanHistory()
+{
+  has_last_plan_command_ = false;
+  has_last_plan_velocity_ = false;
+  last_plan_timestamp_us_ = 0;
+  last_plan_yaw_ = 0.0;
+  last_plan_pitch_ = 0.0;
+  last_plan_yaw_vel_ = 0.0;
+  last_plan_pitch_vel_ = 0.0;
+  last_plan_mpc_ = false;
+}
+
+bool Aimer::BuildMpcGimbalPlan(const SolveTrajectory::Target& target_msg,
+                               double bullet_speed, bool)
+{
+  if (!planner_ready_ || yaw_solver_ == nullptr || pitch_solver_ == nullptr)
+  {
+    return false;
+  }
+
+  PlanTrajectory reference{};
+  double yaw0 = 0.0;
+  if (!BuildReferenceTrajectory(cfg_, target_msg, metrics_msg_.delay_time_s,
+                                bullet_speed, reference, yaw0))
+  {
+    return false;
+  }
+
+  Eigen::VectorXd x0(2);
+  x0 << reference(0, 0), reference(1, 0);
+  tiny_set_x0(yaw_solver_, x0);
+  yaw_solver_->work->Xref = reference.block(0, 0, 2, PLAN_HORIZON);
+  tiny_solve(yaw_solver_);
+
+  x0 << reference(2, 0), reference(3, 0);
+  tiny_set_x0(pitch_solver_, x0);
+  pitch_solver_->work->Xref = reference.block(2, 0, 2, PLAN_HORIZON);
+  tiny_solve(pitch_solver_);
+
+  const int output_index = PLAN_HALF_HORIZON;
+  const double target_yaw = LimitRad(reference(0, output_index) + yaw0);
+  const double target_pitch = reference(2, output_index);
+  const double planned_yaw =
+      LimitRad(yaw_solver_->work->x(0, output_index) + yaw0);
+  const double planned_yaw_vel = yaw_solver_->work->x(1, output_index);
+  const double planned_yaw_acc = yaw_solver_->work->u(0, output_index);
+  const double planned_pitch = pitch_solver_->work->x(0, output_index);
+  const double planned_pitch_vel = pitch_solver_->work->x(1, output_index);
+  const double planned_pitch_acc = pitch_solver_->work->u(0, output_index);
+
+  if (!std::isfinite(target_yaw) || !std::isfinite(target_pitch) ||
+      !std::isfinite(planned_yaw) || !std::isfinite(planned_yaw_vel) ||
+      !std::isfinite(planned_yaw_acc) || !std::isfinite(planned_pitch) ||
+      !std::isfinite(planned_pitch_vel) || !std::isfinite(planned_pitch_acc))
+  {
+    return false;
+  }
+
+  const int fire_index =
+      std::min(PLAN_HORIZON - 1, PLAN_HALF_HORIZON + PLAN_SHOOT_OFFSET);
+  const double plan_error =
+      std::hypot(reference(0, fire_index) - yaw_solver_->work->x(0, fire_index),
+                 reference(2, fire_index) - pitch_solver_->work->x(0, fire_index));
+
+  gimbal_plan_msg_ = {};
+  gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  gimbal_plan_msg_.control = true;
+  gimbal_plan_msg_.fire = plan_error < cfg_.mpc_fire_thresh;
+  gimbal_plan_msg_.target_yaw = static_cast<float>(target_yaw);
+  gimbal_plan_msg_.target_pitch = static_cast<float>(target_pitch);
+  gimbal_plan_msg_.yaw = static_cast<float>(planned_yaw);
+  gimbal_plan_msg_.yaw_vel = static_cast<float>(planned_yaw_vel);
+  gimbal_plan_msg_.yaw_acc = static_cast<float>(planned_yaw_acc);
+  gimbal_plan_msg_.pitch = static_cast<float>(planned_pitch);
+  gimbal_plan_msg_.pitch_vel = static_cast<float>(planned_pitch_vel);
+  gimbal_plan_msg_.pitch_acc = static_cast<float>(planned_pitch_acc);
+  last_plan_mpc_ = true;
+  return true;
+}
+
+void Aimer::BuildFiniteDifferenceGimbalPlan(const SolveTrajectory::Target& target_msg,
+                                            bool control, bool fire, double yaw,
+                                            double pitch)
+{
+  gimbal_plan_msg_ = {};
+  gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  gimbal_plan_msg_.control = control;
+  gimbal_plan_msg_.fire = fire;
+  last_plan_mpc_ = false;
+
+  if (!control || !std::isfinite(yaw) || !std::isfinite(pitch))
+  {
+    ResetGimbalPlanHistory();
+    return;
+  }
+
+  gimbal_plan_msg_.target_yaw = static_cast<float>(yaw);
+  gimbal_plan_msg_.target_pitch = static_cast<float>(pitch);
+  gimbal_plan_msg_.yaw = static_cast<float>(yaw);
+  gimbal_plan_msg_.pitch = static_cast<float>(pitch);
+
+  double dt_s = PLAN_DEFAULT_DT_S;
+  bool have_derivative_dt = false;
+  if (has_last_plan_command_)
+  {
+    if (target_msg.image_timestamp_us > last_plan_timestamp_us_ &&
+        last_plan_timestamp_us_ != 0)
+    {
+      dt_s = static_cast<double>(target_msg.image_timestamp_us - last_plan_timestamp_us_) *
+             1e-6;
+    }
+    have_derivative_dt = dt_s >= PLAN_MIN_DT_S && dt_s <= PLAN_MAX_DT_S;
+  }
+
+  double yaw_vel = 0.0;
+  double pitch_vel = 0.0;
+  double yaw_acc = 0.0;
+  double pitch_acc = 0.0;
+  if (have_derivative_dt)
+  {
+    yaw_vel =
+        ClampSymmetric(LimitRad(yaw - last_plan_yaw_) / dt_s, PLAN_MAX_RATE_RAD_S);
+    pitch_vel = ClampSymmetric(LimitRad(pitch - last_plan_pitch_) / dt_s,
+                               PLAN_MAX_RATE_RAD_S);
+    if (has_last_plan_velocity_)
+    {
+      yaw_acc =
+          ClampSymmetric((yaw_vel - last_plan_yaw_vel_) / dt_s, PLAN_MAX_ACC_RAD_S2);
+      pitch_acc = ClampSymmetric((pitch_vel - last_plan_pitch_vel_) / dt_s,
+                                 PLAN_MAX_ACC_RAD_S2);
+    }
+  }
+
+  gimbal_plan_msg_.yaw_vel = static_cast<float>(yaw_vel);
+  gimbal_plan_msg_.pitch_vel = static_cast<float>(pitch_vel);
+  gimbal_plan_msg_.yaw_acc = static_cast<float>(yaw_acc);
+  gimbal_plan_msg_.pitch_acc = static_cast<float>(pitch_acc);
+
+  has_last_plan_command_ = true;
+  has_last_plan_velocity_ = have_derivative_dt;
+  last_plan_timestamp_us_ = target_msg.image_timestamp_us;
+  last_plan_yaw_ = yaw;
+  last_plan_pitch_ = pitch;
+  last_plan_yaw_vel_ = yaw_vel;
+  last_plan_pitch_vel_ = pitch_vel;
+}
+
+void Aimer::BuildGimbalPlan(const SolveTrajectory::Target& target_msg, bool control,
+                            bool fire, double yaw, double pitch, double bullet_speed)
+{
+  if (!control)
+  {
+    BuildFiniteDifferenceGimbalPlan(target_msg, false, fire, yaw, pitch);
+    return;
+  }
+
+  if (BuildMpcGimbalPlan(target_msg, bullet_speed, fire))
+  {
+    return;
+  }
+
+  BuildFiniteDifferenceGimbalPlan(target_msg, true, fire, yaw, pitch);
+}
+
 void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 {
   const auto start_time = std::chrono::steady_clock::now();
@@ -390,6 +743,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
       target_euler_topic_.Publish(target_euler_msg_);
     }
     fire_notify_topic_.Publish(fire_notify);
+    gimbal_plan_topic_.Publish(gimbal_plan_msg_);
     send_topic_.Publish(send_msg_);
   };
 
@@ -401,12 +755,15 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   trajectory_msg_ = {};
   trajectory_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   trajectory_msg_.target_id = target_msg.id;
+  gimbal_plan_msg_ = {};
+  gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
 
   if (target_msg.id != last_target_id_)
   {
     lock_id_ = -1;
     has_last_command_ = false;
     last_target_id_ = target_msg.id;
+    ResetGimbalPlanHistory();
   }
 
   send_msg_ = {};
@@ -422,6 +779,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   if (!target_msg.tracking)
   {
     has_last_command_ = false;
+    ResetGimbalPlanHistory();
     publish_outputs(false);
     return;
   }
@@ -438,6 +796,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (!debug_aim_point.valid)
   {
+    ResetGimbalPlanHistory();
     publish_outputs(false);
     return;
   }
@@ -448,6 +807,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (trajectory.unsolvable)
   {
+    ResetGimbalPlanHistory();
     publish_outputs(false);
     return;
   }
@@ -493,6 +853,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (!debug_aim_point.valid || trajectory.unsolvable)
   {
+    ResetGimbalPlanHistory();
     publish_outputs(false);
     return;
   }
@@ -522,6 +883,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   send_msg_.pitch = pitch;
   send_msg_.yaw = yaw;
   metrics_msg_.is_fire = send_msg_.is_fire;
+  BuildGimbalPlan(target_msg, true, send_msg_.is_fire, yaw, pitch, bullet_speed);
 
   publish_outputs(true);
 
@@ -530,13 +892,21 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
     XR_LOG_INFO(
         "Aimer frame=%llu target=%s valid=%d converged=%d fire=%d iter=%u delay_s=%.3f "
         "fly_s=%.3f yaw=%.3f gimbal_yaw=%.3f cmd_err_deg=%.2f gimbal_err_deg=%.2f "
-        "tol_deg=%.2f latency_ms=%.2f",
+        "tol_deg=%.2f plan_mpc=%d plan_yaw=%.3f plan_pitch=%.3f "
+        "plan_yaw_vel=%.3f plan_pitch_vel=%.3f plan_yaw_acc=%.3f "
+        "plan_pitch_acc=%.3f latency_ms=%.2f",
         static_cast<unsigned long long>(frame_index_),
         ArmorNumberToString(target_msg.id).data(), metrics_msg_.valid ? 1 : 0,
         metrics_msg_.converged ? 1 : 0, metrics_msg_.is_fire ? 1 : 0,
         metrics_msg_.iteration_count, metrics_msg_.delay_time_s, metrics_msg_.fly_time_s,
         metrics_msg_.yaw, last_fire_gimbal_yaw_rad_,
         last_fire_command_error_rad_ / DEG2RAD, last_fire_gimbal_error_rad_ / DEG2RAD,
-        last_fire_tolerance_rad_ / DEG2RAD, metrics_msg_.latency_ms);
+        last_fire_tolerance_rad_ / DEG2RAD, last_plan_mpc_ ? 1 : 0,
+        static_cast<double>(gimbal_plan_msg_.yaw),
+        static_cast<double>(gimbal_plan_msg_.pitch),
+        static_cast<double>(gimbal_plan_msg_.yaw_vel),
+        static_cast<double>(gimbal_plan_msg_.pitch_vel),
+        static_cast<double>(gimbal_plan_msg_.yaw_acc),
+        static_cast<double>(gimbal_plan_msg_.pitch_acc), metrics_msg_.latency_ms);
   }
 }

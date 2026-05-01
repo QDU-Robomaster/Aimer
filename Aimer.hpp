@@ -2,7 +2,7 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: sp_vision style aimer with iterative ballistic solve
+module_description: sp_vision style aimer with iterative ballistic solve and TinyMPC gimbal plan output
 constructor_args:
   cfg:
     yaw_offset: -1.0
@@ -18,6 +18,17 @@ constructor_args:
     second_tolerance: 2.0
     judge_distance: 2.0
     auto_fire: true
+    enable_mpc_plan: true
+    mpc_fire_thresh: 0.0035
+    max_yaw_acc: 50.0
+    q_yaw_pos: 9000000.0
+    q_yaw_vel: 0.0
+    r_yaw_acc: 1.0
+    max_pitch_acc: 100.0
+    q_pitch_pos: 9000000.0
+    q_pitch_vel: 0.0
+    r_pitch_acc: 1.0
+    mpc_max_iter: 7
 template_args: []
 required_hardware: []
 depends:
@@ -31,9 +42,11 @@ depends:
 #include <cstdint>
 
 #include "ArmorTracker.hpp"
+#include "GimbalPlan.hpp"
 #include "app_framework.hpp"
 #include "libxr.hpp"
 #include "mutex.hpp"
+#include "tinympc/tiny_api.hpp"
 
 class Aimer : public LibXR::Application
 {
@@ -73,6 +86,17 @@ class Aimer : public LibXR::Application
     double second_tolerance{2.0};
     double judge_distance{2.0};
     bool auto_fire{true};
+    bool enable_mpc_plan{true};
+    double mpc_fire_thresh{0.0035};
+    double max_yaw_acc{50.0};
+    double q_yaw_pos{9.0e6};
+    double q_yaw_vel{0.0};
+    double r_yaw_acc{1.0};
+    double max_pitch_acc{100.0};
+    double q_pitch_pos{9.0e6};
+    double q_pitch_vel{0.0};
+    double r_pitch_acc{1.0};
+    int mpc_max_iter{7};
   };
 
   struct AimerMetrics
@@ -106,6 +130,15 @@ class Aimer : public LibXR::Application
                               const Eigen::Vector3d& aim_point, double fly_time,
                               double launch_pitch, double bullet_speed, double yaw,
                               double pitch);
+  void SetupGimbalPlanSolvers();
+  bool BuildMpcGimbalPlan(const SolveTrajectory::Target& target_msg,
+                          double bullet_speed, bool fire);
+  void BuildFiniteDifferenceGimbalPlan(const SolveTrajectory::Target& target_msg,
+                                       bool control, bool fire, double yaw,
+                                       double pitch);
+  void BuildGimbalPlan(const SolveTrajectory::Target& target_msg, bool control,
+                       bool fire, double yaw, double pitch, double bullet_speed);
+  void ResetGimbalPlanHistory();
 
  private:
   Config cfg_{};
@@ -121,12 +154,24 @@ class Aimer : public LibXR::Application
   double last_fire_gimbal_error_rad_{0.0};
   double last_fire_gimbal_yaw_rad_{0.0};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
+  bool has_last_plan_command_{false};
+  bool has_last_plan_velocity_{false};
+  uint64_t last_plan_timestamp_us_{0};
+  double last_plan_yaw_{0.0};
+  double last_plan_pitch_{0.0};
+  double last_plan_yaw_vel_{0.0};
+  double last_plan_pitch_vel_{0.0};
+  bool planner_ready_{false};
+  bool last_plan_mpc_{false};
+  TinySolver* yaw_solver_{nullptr};
+  TinySolver* pitch_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
 
   AimerMetrics metrics_msg_{};
   AimerTrajectory trajectory_msg_{};
   LibXR::EulerAngle<float> target_euler_msg_{};
   ArmorTrackerSend send_msg_{};
+  GimbalPlan gimbal_plan_msg_{};
 
   LibXR::Topic::Domain aimer_domain_ = LibXR::Topic::Domain("aimer");
   LibXR::Topic metrics_topic_ =
@@ -141,4 +186,6 @@ class Aimer : public LibXR::Application
       LibXR::Topic("fire_notify", sizeof(uint8_t), &tracker_domain_);
   LibXR::Topic send_topic_ =
       LibXR::Topic("send", sizeof(ArmorTrackerSend), &tracker_domain_);
+  LibXR::Topic gimbal_plan_topic_ =
+      LibXR::Topic("gimbal_plan", sizeof(GimbalPlan), &tracker_domain_);
 };
