@@ -26,7 +26,7 @@ depends:
 // clang-format on
 
 #include <Eigen/Dense>
-
+#include <array>
 #include <atomic>
 #include <cstdint>
 
@@ -38,6 +38,26 @@ depends:
 class Aimer : public LibXR::Application
 {
  public:
+  struct AimerTrajectory
+  {
+    static constexpr uint8_t MAX_POINTS = 32;
+
+    uint64_t image_timestamp_us{0};
+    bool valid{false};
+    bool fire{false};
+    bool converged{false};
+    uint8_t point_count{0};
+    uint8_t selected_armor_index{0};
+    ArmorNumber target_id{ArmorNumber::INVALID};
+    double bullet_speed{0.0};
+    double delay_time_s{0.0};
+    double fly_time_s{0.0};
+    double yaw{0.0};
+    double pitch{0.0};
+    LibXR::Position<double> aim_point{};
+    std::array<LibXR::Position<double>, MAX_POINTS> points{};
+  };
+
   struct Config
   {
     double yaw_offset{-1.0};
@@ -82,6 +102,10 @@ class Aimer : public LibXR::Application
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
   void TargetCallback(const SolveTrajectory::Target& target_msg);
   bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw);
+  void BuildTrajectoryMessage(const SolveTrajectory::Target& target_msg,
+                              const Eigen::Vector3d& aim_point, double fly_time,
+                              double launch_pitch, double bullet_speed, double yaw,
+                              double pitch);
 
  private:
   Config cfg_{};
@@ -100,16 +124,21 @@ class Aimer : public LibXR::Application
   mutable LibXR::Mutex gimbal_rotation_lock_{};
 
   AimerMetrics metrics_msg_{};
+  AimerTrajectory trajectory_msg_{};
   LibXR::EulerAngle<float> target_euler_msg_{};
   ArmorTrackerSend send_msg_{};
 
   LibXR::Topic::Domain aimer_domain_ = LibXR::Topic::Domain("aimer");
   LibXR::Topic metrics_topic_ =
       LibXR::Topic("metrics", sizeof(AimerMetrics), &aimer_domain_);
+  LibXR::Topic trajectory_topic_ = LibXR::Topic(
+      LibXR::Topic::FindOrCreate<AimerTrajectory>("trajectory", &aimer_domain_));
 
   LibXR::Topic::Domain tracker_domain_ = LibXR::Topic::Domain("tracker");
   LibXR::Topic target_euler_topic_ =
       LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>), &tracker_domain_);
+  LibXR::Topic fire_notify_topic_ =
+      LibXR::Topic("fire_notify", sizeof(uint8_t), &tracker_domain_);
   LibXR::Topic send_topic_ =
       LibXR::Topic("send", sizeof(ArmorTrackerSend), &tracker_domain_);
 };

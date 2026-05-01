@@ -68,14 +68,13 @@ struct PredictedTarget
 
     for (int index = 0; index < msg.armors_num; ++index)
     {
-      const double angle =
-          LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
+      const double angle = LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
       const double armor_x = msg.position.x() + radius * std::cos(angle);
       const double armor_y = msg.position.y() + radius * std::sin(angle);
-      const double armor_z = use_length_height ? msg.position.z() + msg.dz
-                                               : msg.position.z();
+      const double armor_z =
+          use_length_height ? msg.position.z() + msg.dz : msg.position.z();
       armor_xyza_list.push_back({armor_x, armor_y, armor_z, angle});
     }
 
@@ -94,9 +93,8 @@ TrajectorySolution SolveTrajectoryPitch(double bullet_speed, double horizontal_d
     return solution;
   }
 
-  const double a =
-      GRAVITY * horizontal_distance * horizontal_distance /
-      (2.0 * bullet_speed * bullet_speed);
+  const double a = GRAVITY * horizontal_distance * horizontal_distance /
+                   (2.0 * bullet_speed * bullet_speed);
   const double b = -horizontal_distance;
   const double c = a + target_height;
   const double delta = b * b - 4.0 * a * c;
@@ -155,8 +153,7 @@ AimPoint ChooseRotatingArmor(const Aimer::Config& cfg, const PredictedTarget& ta
                              int& lock_id)
 {
   const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
-  const double center_yaw =
-      std::atan2(target.msg.position.y(), target.msg.position.x());
+  const double center_yaw = std::atan2(target.msg.position.y(), target.msg.position.x());
   const double coming_angle =
       (is_outpost ? OUTPOST_COMING_ANGLE_DEG : cfg.comming_angle) * DEG2RAD;
   const double leaving_angle =
@@ -253,7 +250,8 @@ Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app, Config c
   auto gimbal_rotation_callback = LibXR::Topic::Callback::Create(
       [](bool, Aimer* self, LibXR::RawData& data)
       {
-        auto* gimbal_rotation_msg = reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
+        auto* gimbal_rotation_msg =
+            reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
         self->GimbalRotationCallback(*gimbal_rotation_msg);
       },
       this);
@@ -273,9 +271,9 @@ void Aimer::BulletSpeedCallback(float bullet_speed_msg)
 void Aimer::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg)
 {
   LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
-  gimbal_rotation_ = LibXR::Quaternion<double>(gimbal_rotation_msg.w(), gimbal_rotation_msg.x(),
-                                               gimbal_rotation_msg.y(),
-                                               gimbal_rotation_msg.z());
+  gimbal_rotation_ =
+      LibXR::Quaternion<double>(gimbal_rotation_msg.w(), gimbal_rotation_msg.x(),
+                                gimbal_rotation_msg.y(), gimbal_rotation_msg.z());
   has_gimbal_rotation_ = true;
 }
 
@@ -294,7 +292,8 @@ bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw)
 
   const double target_distance = std::hypot(target_xyz.x(), target_xyz.y());
   const double tolerance =
-      (target_distance > cfg_.judge_distance ? cfg_.second_tolerance : cfg_.first_tolerance) *
+      (target_distance > cfg_.judge_distance ? cfg_.second_tolerance
+                                             : cfg_.first_tolerance) *
       DEG2RAD;
   last_fire_tolerance_rad_ = tolerance;
 
@@ -331,17 +330,66 @@ bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw)
   return command_stable && gimbal_aligned;
 }
 
+void Aimer::BuildTrajectoryMessage(const SolveTrajectory::Target& target_msg,
+                                   const Eigen::Vector3d& aim_point, double fly_time,
+                                   double launch_pitch, double bullet_speed, double yaw,
+                                   double pitch)
+{
+  trajectory_msg_ = {};
+  trajectory_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  trajectory_msg_.valid = true;
+  trajectory_msg_.converged = metrics_msg_.converged;
+  trajectory_msg_.selected_armor_index =
+      static_cast<uint8_t>(std::min<uint32_t>(metrics_msg_.selected_armor_index, 255U));
+  trajectory_msg_.target_id = target_msg.id;
+  trajectory_msg_.bullet_speed = bullet_speed;
+  trajectory_msg_.delay_time_s = metrics_msg_.delay_time_s;
+  trajectory_msg_.fly_time_s = fly_time;
+  trajectory_msg_.yaw = yaw;
+  trajectory_msg_.pitch = pitch;
+  trajectory_msg_.aim_point =
+      LibXR::Position<double>(aim_point.x(), aim_point.y(), aim_point.z());
+
+  const double horizontal_distance = std::hypot(aim_point.x(), aim_point.y());
+  if (fly_time <= 0.0 || bullet_speed <= 0.0 ||
+      horizontal_distance <= MIN_HORIZONTAL_DISTANCE_M)
+  {
+    trajectory_msg_.valid = false;
+    return;
+  }
+
+  const double dir_x = aim_point.x() / horizontal_distance;
+  const double dir_y = aim_point.y() / horizontal_distance;
+  const double v_horizontal = bullet_speed * std::cos(launch_pitch);
+  const double v_vertical = bullet_speed * std::sin(launch_pitch);
+  trajectory_msg_.point_count = AimerTrajectory::MAX_POINTS;
+  for (uint8_t index = 0; index < AimerTrajectory::MAX_POINTS; ++index)
+  {
+    const double ratio = static_cast<double>(index) /
+                         static_cast<double>(AimerTrajectory::MAX_POINTS - 1U);
+    const double t = fly_time * ratio;
+    const double s = v_horizontal * t;
+    const double z = v_vertical * t - 0.5 * GRAVITY * t * t;
+    trajectory_msg_.points[index] = LibXR::Position<double>(dir_x * s, dir_y * s, z);
+  }
+}
+
 void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 {
   const auto start_time = std::chrono::steady_clock::now();
-  auto publish_outputs = [&]()
+  auto publish_outputs = [&](bool publish_target_euler)
   {
-    metrics_msg_.latency_ms =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                  start_time)
-            .count();
+    uint8_t fire_notify = send_msg_.is_fire ? 1U : 0U;
+    metrics_msg_.latency_ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - start_time)
+                                  .count();
     metrics_topic_.Publish(metrics_msg_);
-    target_euler_topic_.Publish(target_euler_msg_);
+    trajectory_topic_.Publish(trajectory_msg_);
+    if (publish_target_euler)
+    {
+      target_euler_topic_.Publish(target_euler_msg_);
+    }
+    fire_notify_topic_.Publish(fire_notify);
     send_topic_.Publish(send_msg_);
   };
 
@@ -350,6 +398,9 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   metrics_msg_.frame_index = frame_index_;
   metrics_msg_.target_tracking = target_msg.tracking;
   metrics_msg_.target_id = target_msg.id;
+  trajectory_msg_ = {};
+  trajectory_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  trajectory_msg_.target_id = target_msg.id;
 
   if (target_msg.id != last_target_id_)
   {
@@ -371,14 +422,13 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   if (!target_msg.tracking)
   {
     has_last_command_ = false;
-    publish_outputs();
+    publish_outputs(false);
     return;
   }
 
-  const double delay_time =
-      (std::abs(target_msg.v_yaw) > cfg_.yaw_rate_threshold)
-          ? cfg_.high_speed_delay_time
-          : cfg_.low_speed_delay_time;
+  const double delay_time = (std::abs(target_msg.v_yaw) > cfg_.yaw_rate_threshold)
+                                ? cfg_.high_speed_delay_time
+                                : cfg_.low_speed_delay_time;
   metrics_msg_.delay_time_s = delay_time;
 
   PredictedTarget base_target{target_msg};
@@ -388,18 +438,17 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (!debug_aim_point.valid)
   {
-    publish_outputs();
+    publish_outputs(false);
     return;
   }
 
   const Eigen::Vector3d xyz_0 = debug_aim_point.xyza.head<3>();
-  const double horizontal_distance_0 =
-      std::hypot(xyz_0.x(), xyz_0.y());
+  const double horizontal_distance_0 = std::hypot(xyz_0.x(), xyz_0.y());
   auto trajectory = SolveTrajectoryPitch(bullet_speed, horizontal_distance_0, xyz_0.z());
 
   if (trajectory.unsolvable)
   {
-    publish_outputs();
+    publish_outputs(false);
     return;
   }
 
@@ -444,7 +493,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
 
   if (!debug_aim_point.valid || trajectory.unsolvable)
   {
-    publish_outputs();
+    publish_outputs(false);
     return;
   }
 
@@ -453,8 +502,7 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   metrics_msg_.fly_time_s = trajectory.fly_time;
 
   const Eigen::Vector3d final_xyz = debug_aim_point.xyza.head<3>();
-  const double yaw = std::atan2(final_xyz.y(), final_xyz.x()) +
-                     cfg_.yaw_offset * DEG2RAD;
+  const double yaw = std::atan2(final_xyz.y(), final_xyz.x()) + cfg_.yaw_offset * DEG2RAD;
   const double pitch = -(trajectory.pitch + cfg_.pitch_offset * DEG2RAD);
 
   metrics_msg_.yaw = yaw;
@@ -464,6 +512,9 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   target_euler_msg_.Yaw() = static_cast<float>(yaw);
 
   send_msg_.is_fire = debug_aim_point.shootable && ShouldAutoFire(final_xyz, yaw);
+  BuildTrajectoryMessage(target_msg, final_xyz, trajectory.fly_time, trajectory.pitch,
+                         bullet_speed, yaw, pitch);
+  trajectory_msg_.fire = send_msg_.is_fire;
   send_msg_.position.x() = final_xyz.x();
   send_msg_.position.y() = final_xyz.y();
   send_msg_.position.z() = final_xyz.z();
@@ -472,19 +523,20 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   send_msg_.yaw = yaw;
   metrics_msg_.is_fire = send_msg_.is_fire;
 
-  publish_outputs();
+  publish_outputs(true);
 
   if ((frame_index_ % 30U) == 0U)
   {
     XR_LOG_INFO(
-        "Aimer frame=%llu target=%s valid=%d converged=%d fire=%d iter=%u delay_s=%.3f fly_s=%.3f yaw=%.3f gimbal_yaw=%.3f cmd_err_deg=%.2f gimbal_err_deg=%.2f tol_deg=%.2f latency_ms=%.2f",
+        "Aimer frame=%llu target=%s valid=%d converged=%d fire=%d iter=%u delay_s=%.3f "
+        "fly_s=%.3f yaw=%.3f gimbal_yaw=%.3f cmd_err_deg=%.2f gimbal_err_deg=%.2f "
+        "tol_deg=%.2f latency_ms=%.2f",
         static_cast<unsigned long long>(frame_index_),
         ArmorNumberToString(target_msg.id).data(), metrics_msg_.valid ? 1 : 0,
         metrics_msg_.converged ? 1 : 0, metrics_msg_.is_fire ? 1 : 0,
-        metrics_msg_.iteration_count,
-        metrics_msg_.delay_time_s, metrics_msg_.fly_time_s, metrics_msg_.yaw,
-        last_fire_gimbal_yaw_rad_, last_fire_command_error_rad_ / DEG2RAD,
-        last_fire_gimbal_error_rad_ / DEG2RAD, last_fire_tolerance_rad_ / DEG2RAD,
-        metrics_msg_.latency_ms);
+        metrics_msg_.iteration_count, metrics_msg_.delay_time_s, metrics_msg_.fly_time_s,
+        metrics_msg_.yaw, last_fire_gimbal_yaw_rad_,
+        last_fire_command_error_rad_ / DEG2RAD, last_fire_gimbal_error_rad_ / DEG2RAD,
+        last_fire_tolerance_rad_ / DEG2RAD, metrics_msg_.latency_ms);
   }
 }
