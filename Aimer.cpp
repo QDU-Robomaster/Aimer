@@ -890,12 +890,12 @@ void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
   if ((frame_index_ % 30U) == 0U)
   {
     XR_LOG_INFO(
-        "Aimer frame=%llu target=%s valid=%d converged=%d fire=%d iter=%u delay_s=%.3f "
+        "Aimer frame=%u target=%s valid=%d converged=%d fire=%d iter=%u delay_s=%.3f "
         "fly_s=%.3f yaw=%.3f gimbal_yaw=%.3f cmd_err_deg=%.2f gimbal_err_deg=%.2f "
         "tol_deg=%.2f plan_mpc=%d plan_yaw=%.3f plan_pitch=%.3f "
         "plan_yaw_vel=%.3f plan_pitch_vel=%.3f plan_yaw_acc=%.3f "
         "plan_pitch_acc=%.3f latency_ms=%.2f",
-        static_cast<unsigned long long>(frame_index_),
+        static_cast<unsigned>(frame_index_),
         ArmorNumberToString(target_msg.id).data(), metrics_msg_.valid ? 1 : 0,
         metrics_msg_.converged ? 1 : 0, metrics_msg_.is_fire ? 1 : 0,
         metrics_msg_.iteration_count, metrics_msg_.delay_time_s, metrics_msg_.fly_time_s,
