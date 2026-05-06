@@ -82,7 +82,7 @@ struct AimCommand
 
 struct PredictedTarget
 {
-  SolveTrajectory::Target msg{};
+  ArmorTrackerTarget msg{};
 
   void Predict(double dt)
   {
@@ -278,7 +278,7 @@ AimCommand ComputeNearestAimCommand(const Aimer::Config& cfg,
 }
 
 bool BuildReferenceTrajectory(const Aimer::Config& cfg,
-                              const SolveTrajectory::Target& target_msg,
+                              const ArmorTrackerTarget& target_msg,
                               double delay_time, double bullet_speed,
                               PlanTrajectory& trajectory, double& yaw0)
 {
@@ -347,11 +347,11 @@ Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app, Config c
 
   LibXR::Topic::Domain tracker_domain("tracker");
   LibXR::Topic target_topic =
-      LibXR::Topic::FindOrCreate<SolveTrajectory::Target>("target", &tracker_domain);
+      LibXR::Topic::FindOrCreate<ArmorTrackerTarget>("target", &tracker_domain);
   auto target_callback = LibXR::Topic::Callback::Create(
       [](bool, Aimer* self, LibXR::RawData& data)
       {
-        auto* target_msg = reinterpret_cast<SolveTrajectory::Target*>(data.addr_);
+        auto* target_msg = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
         self->TargetCallback(*target_msg);
       },
       this);
@@ -455,7 +455,7 @@ bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw)
   return command_stable && gimbal_aligned;
 }
 
-void Aimer::BuildTrajectoryMessage(const SolveTrajectory::Target& target_msg,
+void Aimer::BuildTrajectoryMessage(const ArmorTrackerTarget& target_msg,
                                    const Eigen::Vector3d& aim_point, double fly_time,
                                    double launch_pitch, double bullet_speed, double yaw,
                                    double pitch)
@@ -575,7 +575,7 @@ void Aimer::ResetGimbalPlanHistory()
   last_plan_mpc_ = false;
 }
 
-bool Aimer::BuildMpcGimbalPlan(const SolveTrajectory::Target& target_msg,
+bool Aimer::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
                                double bullet_speed, bool)
 {
   if (!planner_ready_ || yaw_solver_ == nullptr || pitch_solver_ == nullptr)
@@ -643,7 +643,7 @@ bool Aimer::BuildMpcGimbalPlan(const SolveTrajectory::Target& target_msg,
   return true;
 }
 
-void Aimer::BuildFiniteDifferenceGimbalPlan(const SolveTrajectory::Target& target_msg,
+void Aimer::BuildFiniteDifferenceGimbalPlan(const ArmorTrackerTarget& target_msg,
                                             bool control, bool fire, double yaw,
                                             double pitch)
 {
@@ -710,7 +710,7 @@ void Aimer::BuildFiniteDifferenceGimbalPlan(const SolveTrajectory::Target& targe
   last_plan_pitch_vel_ = pitch_vel;
 }
 
-void Aimer::BuildGimbalPlan(const SolveTrajectory::Target& target_msg, bool control,
+void Aimer::BuildGimbalPlan(const ArmorTrackerTarget& target_msg, bool control,
                             bool fire, double yaw, double pitch, double bullet_speed)
 {
   if (!control)
@@ -727,7 +727,7 @@ void Aimer::BuildGimbalPlan(const SolveTrajectory::Target& target_msg, bool cont
   BuildFiniteDifferenceGimbalPlan(target_msg, true, fire, yaw, pitch);
 }
 
-void Aimer::TargetCallback(const SolveTrajectory::Target& target_msg)
+void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
   const auto start_time = std::chrono::steady_clock::now();
   auto publish_outputs = [&](bool publish_target_euler)

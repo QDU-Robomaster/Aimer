@@ -42,11 +42,23 @@ depends:
 #include <cstdint>
 
 #include "ArmorTracker.hpp"
+#include "ArmorTrackerTarget.hpp"
 #include "GimbalPlan.hpp"
 #include "app_framework.hpp"
 #include "libxr.hpp"
 #include "mutex.hpp"
 #include "tinympc/tiny_api.hpp"
+
+struct AimerSend
+{
+  bool is_fire{};
+  LibXR::Position<double> position{};
+  double v_yaw{};
+  double pitch{};
+  double yaw{};
+  Eigen::Matrix<double, 3, 1> cmd_vel_linear = Eigen::Matrix<double, 3, 1>::Zero();
+  Eigen::Matrix<double, 3, 1> cmd_vel_angular = Eigen::Matrix<double, 3, 1>::Zero();
+};
 
 class Aimer : public LibXR::Application
 {
@@ -124,19 +136,19 @@ class Aimer : public LibXR::Application
  private:
   void BulletSpeedCallback(float bullet_speed_msg);
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
-  void TargetCallback(const SolveTrajectory::Target& target_msg);
+  void TargetCallback(const ArmorTrackerTarget& target_msg);
   bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double yaw);
-  void BuildTrajectoryMessage(const SolveTrajectory::Target& target_msg,
+  void BuildTrajectoryMessage(const ArmorTrackerTarget& target_msg,
                               const Eigen::Vector3d& aim_point, double fly_time,
                               double launch_pitch, double bullet_speed, double yaw,
                               double pitch);
   void SetupGimbalPlanSolvers();
-  bool BuildMpcGimbalPlan(const SolveTrajectory::Target& target_msg,
+  bool BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
                           double bullet_speed, bool fire);
-  void BuildFiniteDifferenceGimbalPlan(const SolveTrajectory::Target& target_msg,
+  void BuildFiniteDifferenceGimbalPlan(const ArmorTrackerTarget& target_msg,
                                        bool control, bool fire, double yaw,
                                        double pitch);
-  void BuildGimbalPlan(const SolveTrajectory::Target& target_msg, bool control,
+  void BuildGimbalPlan(const ArmorTrackerTarget& target_msg, bool control,
                        bool fire, double yaw, double pitch, double bullet_speed);
   void ResetGimbalPlanHistory();
 
@@ -170,7 +182,7 @@ class Aimer : public LibXR::Application
   AimerMetrics metrics_msg_{};
   AimerTrajectory trajectory_msg_{};
   LibXR::EulerAngle<float> target_euler_msg_{};
-  ArmorTrackerSend send_msg_{};
+  AimerSend send_msg_{};
   GimbalPlan gimbal_plan_msg_{};
 
   LibXR::Topic::Domain aimer_domain_ = LibXR::Topic::Domain("aimer");
@@ -185,7 +197,7 @@ class Aimer : public LibXR::Application
   LibXR::Topic fire_notify_topic_ =
       LibXR::Topic("fire_notify", sizeof(uint8_t), &tracker_domain_);
   LibXR::Topic send_topic_ =
-      LibXR::Topic("send", sizeof(ArmorTrackerSend), &tracker_domain_);
+      LibXR::Topic("send", sizeof(AimerSend), &tracker_domain_);
   LibXR::Topic gimbal_plan_topic_ =
       LibXR::Topic("gimbal_plan", sizeof(GimbalPlan), &tracker_domain_);
 };

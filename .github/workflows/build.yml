@@ -130,7 +130,11 @@ jobs:
         run: |
           mkdir -p build
           cd build
-          cmake .. -DOpenVINO_DIR=/opt/intel/openvino_2025.4.0/runtime/cmake
+          cmake .. \
+            -DOpenVINO_DIR=/opt/intel/openvino_2025.4.0/runtime/cmake \
+            -DLIBXR_PRINT_INTEGER_ENABLE_64BIT=ON \
+            -DLIBXR_PRINT_FLOAT_ENABLE_DOUBLE=ON \
+            -DLIBXR_PRINT_ENABLE_POINTER=ON
           make
 
       - name: Create Tag via GitHub API

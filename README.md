@@ -5,7 +5,7 @@
 
 ## 数据流
 
-- 输入 `tracker/target`：`ArmorTracker` 发布的 `SolveTrajectory::Target`。
+- 输入 `tracker/target`：`ArmorTracker` 发布的 `ArmorTrackerTarget`。
 - 输入 `referee/bullet_speed`：裁判系统或上游估计的当前弹速，异常或过低时回退到默认弹速。
 - 输入 `gimbal/rotation`：云台当前姿态，只用于自动开火判定。
 - 输出 `tracker/target_eulr`：兼容旧下游的云台角度 topic，名称保持历史拼写。
@@ -30,5 +30,5 @@
 ## 边界
 
 - Aimer 不负责目标跟踪，也不修改同步链路。
-- Aimer 不依赖旧版跳变标志或额外序号，当前输入以 `SolveTrajectory::Target` 字段为准。
+- Aimer 不依赖旧版跳变标志或额外序号，当前输入以 `ArmorTrackerTarget` 字段为准。
 - `latency_ms` 是本模块回调处理耗时，不是传感器采集时间。
