@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <utility>
 
 #include <Eigen/Dense>
@@ -39,20 +38,6 @@ inline double LimitRad(double angle)
     angle += 2.0 * PI;
   }
   return angle;
-}
-
-/**
- * @brief 将正数秒数转换为微秒。
- * @param seconds 时间长度，单位 s。
- * @return 四舍五入后的微秒数；输入无效时返回 0。
- */
-inline uint64_t SecondsToMicros(double seconds)
-{
-  if (!std::isfinite(seconds) || seconds <= 0.0)
-  {
-    return 0;
-  }
-  return static_cast<uint64_t>(std::llround(seconds * 1.0e6));
 }
 
 /**

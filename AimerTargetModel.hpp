@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -26,20 +25,10 @@ struct AimPoint
   bool valid{false};
   /// 该装甲板是否允许开火。
   bool shootable{false};
-  /// 该装甲板是否满足正面角度门控。
-  bool front_facing{false};
-  /// 参与选择的候选装甲板数量。
-  uint8_t candidate_count{0};
   /// 选中的装甲板面索引。
   int armor_index{0};
   /// 装甲板相对整车中心方位的视角，单位 rad。
   double view_angle{0.0};
-  /// 当前选择策略。
-  Aimer::Strategy strategy{Aimer::Strategy::LOST};
-  /// 装甲板被选中的原因。
-  Aimer::SelectReason selected_reason{Aimer::SelectReason::NONE};
-  /// 选中装甲板发生变化的原因。
-  Aimer::SwitchReason switch_reason{Aimer::SwitchReason::NONE};
   /// 选中装甲板中心 x、y、z 和装甲板 yaw。
   Eigen::Vector4d xyza{Eigen::Vector4d::Zero()};
 };
@@ -105,31 +94,6 @@ struct PredictedTarget
 };
 
 /**
- * @brief 将 tracker 目标分类为当前 Aimer 策略。
- * @param cfg Aimer 运行时配置。
- * @param target tracker 目标状态。
- * @return 目标当前策略。
- */
-inline Aimer::Strategy SelectStrategy(const Aimer::Config& cfg,
-                                      const ArmorTrackerTarget& target)
-{
-  if (!target.tracking)
-  {
-    return Aimer::Strategy::LOST;
-  }
-  if (target.id == ArmorNumber::OUTPOST)
-  {
-    return Aimer::Strategy::OUTPOST;
-  }
-  const double abs_v_yaw = std::abs(target.v_yaw);
-  if (abs_v_yaw <= cfg.yaw_rate_threshold)
-  {
-    return Aimer::Strategy::LOW_SPEED;
-  }
-  return Aimer::Strategy::MEDIUM_SPIN;
-}
-
-/**
  * @brief 计算弹丸飞行时间之前的固定预测延迟。
  * @param cfg Aimer 运行时配置。
  * @param target tracker 目标状态。
@@ -158,66 +122,35 @@ inline double ViewAngle(const ArmorTrackerTarget& target, const Eigen::Vector4d&
 }
 
 /**
- * @brief 检查装甲板是否满足当前正面角度门控。
- * @param cfg Aimer 运行时配置。
- * @param target tracker 目标状态。
- * @param xyza 装甲板中心和装甲板 yaw。
- * @return 装甲板位于正面角度窗口内时返回 true。
- */
-inline bool IsFrontFacing(const Aimer::Config& cfg, const ArmorTrackerTarget& target,
-                          const Eigen::Vector4d& xyza)
-{
-  (void)cfg;
-  return std::abs(ViewAngle(target, xyza)) <= 75.0 * DEG2RAD;
-}
-
-/**
  * @brief 将选中的装甲板候选封装为 AimPoint。
- * @param cfg Aimer 运行时配置。
  * @param target 预测后的 tracker 目标。
  * @param armor_index 选中的装甲板索引。
  * @param xyza 选中装甲板中心和装甲板 yaw。
- * @param strategy 当前选择策略。
- * @param reason 选择原因。
- * @param switch_reason 锁定切换原因。
  * @param shootable 该装甲板是否允许开火。
- * @param candidate_count 候选装甲板数量。
  * @return 填充后的瞄点。
  */
-inline AimPoint BuildAimPoint(const Aimer::Config& cfg, const PredictedTarget& target,
-                              int armor_index, const Eigen::Vector4d& xyza,
-                              Aimer::Strategy strategy,
-                              Aimer::SelectReason reason,
-                              Aimer::SwitchReason switch_reason, bool shootable,
-                              uint8_t candidate_count)
+inline AimPoint BuildAimPoint(const PredictedTarget& target, int armor_index,
+                              const Eigen::Vector4d& xyza, bool shootable)
 {
   AimPoint out;
   out.valid = true;
   out.shootable = shootable;
-  out.front_facing = IsFrontFacing(cfg, target.msg, xyza);
-  out.candidate_count = candidate_count;
   out.armor_index = armor_index;
   out.view_angle = ViewAngle(target.msg, xyza);
-  out.strategy = strategy;
-  out.selected_reason = reason;
-  out.switch_reason = switch_reason;
   out.xyza = xyza;
   return out;
 }
 
 /**
  * @brief 选择水平距离最近的装甲板候选。
- * @param cfg Aimer 运行时配置。
  * @param target 预测后的 tracker 目标。
  * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
  * @param lock_id 输入上一锁定索引，输出新的选中索引。
- * @param strategy 附加到结果上的当前策略。
  * @return 选中的瞄点。
  */
 inline AimPoint ChooseNearestArmor(
-    const Aimer::Config& cfg, const PredictedTarget& target,
-    const std::vector<Eigen::Vector4d>& armor_xyza_list, int& lock_id,
-    Aimer::Strategy strategy)
+    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
+    int& lock_id)
 {
   int nearest_index = 0;
   double nearest_distance = std::numeric_limits<double>::max();
@@ -231,31 +164,19 @@ inline AimPoint ChooseNearestArmor(
     }
   }
 
-  const int old_lock_id = lock_id;
   lock_id = nearest_index;
-  Aimer::SwitchReason switch_reason = Aimer::SwitchReason::NONE;
-  if (old_lock_id >= 0 && old_lock_id != nearest_index)
-  {
-    switch_reason = Aimer::SwitchReason::NEAREST_CHANGED;
-  }
-  return BuildAimPoint(
-      cfg, target, nearest_index, armor_xyza_list[nearest_index], strategy,
-      Aimer::SelectReason::NEAREST_FRONT, switch_reason, true,
-      static_cast<uint8_t>(std::min<std::size_t>(armor_xyza_list.size(), 255U)));
+  return BuildAimPoint(target, nearest_index, armor_xyza_list[nearest_index], true);
 }
 
 /**
- * @brief 按当前目标策略选择瞄点。
- * @param cfg Aimer 运行时配置。
+ * @brief 按水平距离最近原则选择瞄点。
  * @param target 预测后的 tracker 目标。
  * @param lock_id 输入上一锁定索引，输出新的选中索引。
  * @return 选中的瞄点；无可瞄目标时返回 invalid。
  */
-inline AimPoint ChooseAimPoint(const Aimer::Config& cfg, const PredictedTarget& target,
-                               int& lock_id)
+inline AimPoint ChooseAimPoint(const PredictedTarget& target, int& lock_id)
 {
-  const Aimer::Strategy strategy = SelectStrategy(cfg, target.msg);
-  if (strategy == Aimer::Strategy::LOST)
+  if (!target.msg.tracking)
   {
     lock_id = -1;
     return {};
@@ -268,7 +189,7 @@ inline AimPoint ChooseAimPoint(const Aimer::Config& cfg, const PredictedTarget& 
     return {};
   }
 
-  return ChooseNearestArmor(cfg, target, armor_xyza_list, lock_id, strategy);
+  return ChooseNearestArmor(target, armor_xyza_list, lock_id);
 }
 
 /**
@@ -290,9 +211,7 @@ inline AimCommand ComputeNearestAimCommand(const Aimer::Config& cfg,
   }
 
   int nearest_lock_id = -1;
-  command.aim_point = ChooseNearestArmor(cfg, target, armor_xyza_list,
-                                         nearest_lock_id,
-                                         Aimer::Strategy::LOW_SPEED);
+  command.aim_point = ChooseNearestArmor(target, armor_xyza_list, nearest_lock_id);
 
   const Eigen::Vector3d xyz = command.aim_point.xyza.head<3>();
   const double horizontal_distance = HorizontalDistance(xyz);

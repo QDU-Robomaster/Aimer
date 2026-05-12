@@ -109,7 +109,6 @@ inline void Aimer::SetupGimbalPlanSolvers()
   planner_ready_ = false;
   if (!cfg_.enable_mpc_plan)
   {
-    XR_LOG_INFO("Aimer TinyMPC gimbal_plan disabled by config");
     return;
   }
 
@@ -157,14 +156,7 @@ inline void Aimer::SetupGimbalPlanSolvers()
                                      cfg_.q_pitch_pos, cfg_.q_pitch_vel,
                                      cfg_.r_pitch_acc);
   planner_ready_ = yaw_ok && pitch_ok;
-  if (planner_ready_)
-  {
-    XR_LOG_INFO(
-        "Aimer TinyMPC gimbal_plan enabled horizon=%d dt=%.3f max_yaw_acc=%.1f max_pitch_acc=%.1f iter=%d",
-        AimerDetail::PLAN_HORIZON, AimerDetail::PLAN_DEFAULT_DT_S,
-        cfg_.max_yaw_acc, cfg_.max_pitch_acc, cfg_.mpc_max_iter);
-  }
-  else
+  if (!planner_ready_)
   {
     XR_LOG_WARN("Aimer TinyMPC gimbal_plan setup failed; finite-difference fallback active");
   }
@@ -186,7 +178,8 @@ inline void Aimer::ResetGimbalPlanHistory()
  * @return TinyMPC 产出有限计划时返回 true。
  */
 inline bool Aimer::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                      double bullet_speed, bool fire)
+                                      double delay_time, double bullet_speed,
+                                      bool fire)
 {
   if (!planner_ready_ || yaw_solver_ == nullptr || pitch_solver_ == nullptr)
   {
@@ -195,8 +188,7 @@ inline bool Aimer::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
 
   AimerDetail::PlanTrajectory reference{};
   double yaw0 = 0.0;
-  if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg,
-                                             metrics_msg_.delay_time_s,
+  if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg, delay_time,
                                              bullet_speed, reference, yaw0))
   {
     return false;
@@ -296,8 +288,8 @@ inline void Aimer::BuildFiniteDifferenceGimbalPlan(
  * @param bullet_speed 弹速，单位 m/s。
  */
 inline void Aimer::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                   bool control, bool fire, double yaw,
-                                   double pitch, double bullet_speed)
+                                   double delay_time, bool control, bool fire,
+                                   double yaw, double pitch, double bullet_speed)
 {
   if (!control)
   {
@@ -305,7 +297,7 @@ inline void Aimer::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
     return;
   }
 
-  if (BuildMpcGimbalPlan(target_msg, bullet_speed, fire))
+  if (BuildMpcGimbalPlan(target_msg, delay_time, bullet_speed, fire))
   {
     return;
   }
