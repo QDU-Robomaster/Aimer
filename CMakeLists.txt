@@ -6,7 +6,6 @@ target_include_directories(xr PUBLIC
 )
 
 set(MODULE_AIMER_SRC
-  "${CMAKE_CURRENT_LIST_DIR}/Aimer.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/tinympc/admm.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/tinympc/rho_benchmark.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/tinympc/tiny_api.cpp"
