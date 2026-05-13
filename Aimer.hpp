@@ -7,7 +7,7 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: ballistic aimer with TinyMPC gimbal plan output
+module_description: ballistic aimer with DevC host target output
 constructor_args:
   cfg:
     yaw_offset: -1.0
@@ -49,8 +49,6 @@ constructor_args:
     enable_runtime_log: true
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
-    referee_domain: "host"
-    referee_topic: "robot_game_ref"
 template_args:
   - Info:
       width: 1280
@@ -141,25 +139,42 @@ static_assert(sizeof(AimerRefereeLauncherData) == 7);
 static_assert(sizeof(AimerRefereeSummary) == 31);
 
 /**
- * @brief 发布到 tracker/send 的云台命令载荷。
+ * @brief DevC HostData 接收的云台目标载荷。
  */
-struct AimerSend
+struct AimerHostGimbalTarget
 {
-  /// 当前命令是否请求开火。
-  bool is_fire{};
-  /// tracker 相机坐标系下的选中瞄点。
-  LibXR::Position<double> position{};
-  /// 目标 yaw 角速度，单位 rad/s。
-  double v_yaw{};
-  /// 命令 pitch，单位 rad。
-  double pitch{};
-  /// 命令 yaw，单位 rad。
-  double yaw{};
-  /// 预留线速度命令，当前保持为 0。
-  Eigen::Matrix<double, 3, 1> cmd_vel_linear = Eigen::Matrix<double, 3, 1>::Zero();
-  /// 预留角速度命令，当前保持为 0。
-  Eigen::Matrix<double, 3, 1> cmd_vel_angular = Eigen::Matrix<double, 3, 1>::Zero();
+  /// roll 命令，单位 rad。
+  float rol{0.0f};
+  /// pitch 命令，单位 rad。
+  float pit{0.0f};
+  /// yaw 命令，单位 rad。
+  float yaw{0.0f};
+  /// roll 速度前馈，单位 rad/s。
+  float rol_dot{0.0f};
+  /// pitch 速度前馈，单位 rad/s。
+  float pit_dot{0.0f};
+  /// yaw 速度前馈，单位 rad/s。
+  float yaw_dot{0.0f};
+  /// roll 加速度前馈，单位 rad/s^2。
+  float rol_ddot{0.0f};
+  /// pitch 加速度前馈，单位 rad/s^2。
+  float pit_ddot{0.0f};
+  /// yaw 加速度前馈，单位 rad/s^2。
+  float yaw_ddot{0.0f};
 };
+
+static_assert(sizeof(AimerHostGimbalTarget) == sizeof(float) * 9);
+
+/**
+ * @brief DevC LauncherCMD 接收的发射许可载荷。
+ */
+struct AimerHostFireNotify
+{
+  /// 是否允许发射。
+  bool isfire{false};
+};
+
+static_assert(sizeof(AimerHostFireNotify) == 1);
 
 /**
  * @brief 由 xrobot YAML 生成的 Aimer 运行时配置。
@@ -224,10 +239,6 @@ struct AimerConfig
     double bullet_speed_log_delta{0.05};
     /// 热量变化超过该阈值时打印反馈日志。
     double heat_log_delta{1.0};
-    /// 裁判系统摘要 topic 域。
-    const char* referee_domain{"host"};
-    /// 裁判系统摘要 topic 名。
-    const char* referee_topic{"robot_game_ref"};
 };
 
 /**
@@ -277,7 +288,7 @@ class AimerCore : public LibXR::Application
    */
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
   /**
-   * @brief 处理一帧 tracker 目标消息并发布所有 Aimer 输出。
+   * @brief 处理一帧 tracker 目标消息并发布 host 输出。
    */
   void TargetCallback(const ArmorTrackerTarget& target_msg);
   /**
@@ -335,16 +346,13 @@ class AimerCore : public LibXR::Application
   mutable LibXR::Mutex gimbal_rotation_lock_{};
   mutable LibXR::Mutex runtime_log_lock_{};
 
-  AimerSend send_msg_{};
   GimbalPlan gimbal_plan_msg_{};
 
-  LibXR::Topic::Domain tracker_domain_ = LibXR::Topic::Domain("tracker");
-  LibXR::Topic fire_notify_topic_ =
-      LibXR::Topic("fire_notify", sizeof(uint8_t), &tracker_domain_);
-  LibXR::Topic send_topic_ =
-      LibXR::Topic("send", sizeof(AimerSend), &tracker_domain_);
-  LibXR::Topic gimbal_plan_topic_ =
-      LibXR::Topic("gimbal_plan", sizeof(GimbalPlan), &tracker_domain_);
+  LibXR::Topic::Domain host_domain_ = LibXR::Topic::Domain("host");
+  LibXR::Topic host_gimbal_topic_ =
+      LibXR::Topic("target_euler", sizeof(AimerHostGimbalTarget), &host_domain_);
+  LibXR::Topic host_fire_topic_ =
+      LibXR::Topic("fire_notify", sizeof(AimerHostFireNotify), &host_domain_);
 };
 
 #include "AimerImpl.hpp"

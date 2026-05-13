@@ -29,7 +29,10 @@ inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager
       [](bool, AimerCore* self, LibXR::RawData& data)
       {
         auto* target_msg = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
-        self->TargetCallback(*target_msg);
+        if (target_msg != nullptr && data.size_ == sizeof(ArmorTrackerTarget))
+        {
+          self->TargetCallback(*target_msg);
+        }
       },
       this);
   target_topic.RegisterCallback(target_callback);
@@ -42,7 +45,11 @@ inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager
       {
         auto* gimbal_rotation_msg =
             reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
-        self->GimbalRotationCallback(*gimbal_rotation_msg);
+        if (gimbal_rotation_msg != nullptr &&
+            data.size_ == sizeof(LibXR::Quaternion<float>))
+        {
+          self->GimbalRotationCallback(*gimbal_rotation_msg);
+        }
       },
       this);
   gimbal_rotation_topic.RegisterCallback(gimbal_rotation_callback);
@@ -55,26 +62,21 @@ inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager
  */
 inline void AimerCore::RegisterRuntimeLogCallbacks()
 {
-  const char* referee_domain_name =
-      (cfg_.referee_domain != nullptr && cfg_.referee_domain[0] != '\0')
-          ? cfg_.referee_domain
-          : "host";
-  LibXR::Topic::Domain referee_domain(referee_domain_name);
-
-  if (cfg_.referee_topic != nullptr && cfg_.referee_topic[0] != '\0')
-  {
-    LibXR::Topic referee_topic =
-        LibXR::Topic::FindOrCreate<AimerRefereeSummary>(cfg_.referee_topic,
-                                                        &referee_domain);
-    auto referee_callback = LibXR::Topic::Callback::Create(
-        [](bool, AimerCore* self, LibXR::RawData& data)
+  LibXR::Topic::Domain referee_domain("host");
+  LibXR::Topic referee_topic =
+      LibXR::Topic::FindOrCreate<AimerRefereeSummary>("robot_game_ref",
+                                                      &referee_domain);
+  auto referee_callback = LibXR::Topic::Callback::Create(
+      [](bool, AimerCore* self, LibXR::RawData& data)
+      {
+        auto* summary = reinterpret_cast<AimerRefereeSummary*>(data.addr_);
+        if (summary != nullptr && data.size_ == sizeof(AimerRefereeSummary))
         {
-          auto* summary = reinterpret_cast<AimerRefereeSummary*>(data.addr_);
           self->RefereeSummaryCallback(*summary);
-        },
-        this);
-    referee_topic.RegisterCallback(referee_callback);
-  }
+        }
+      },
+      this);
+  referee_topic.RegisterCallback(referee_callback);
 }
 
 /**
@@ -206,7 +208,7 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
         target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        send_msg_.yaw, send_msg_.pitch, bullet_speed, current_heat,
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed, current_heat,
         last_logged_heat_limit_, last_logged_cooling_);
   }
   else
@@ -216,7 +218,7 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
         target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        send_msg_.yaw, send_msg_.pitch, bullet_speed);
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed);
   }
   last_logged_fire_state_ = fire;
   have_logged_fire_state_ = true;
@@ -297,22 +299,33 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
 }
 
 /**
- * @brief 处理一帧 tracker 目标并发布全部 Aimer 输出。
+ * @brief 处理一帧 tracker 目标并发布 host 输出。
  * @param target_msg 当前 tracker 目标消息。
  */
 inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
-  send_msg_ = {};
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
 
   auto publish_outputs = [&](double publish_bullet_speed)
   {
-    LogFireState(target_msg, send_msg_.is_fire, publish_bullet_speed);
-    uint8_t fire_notify = send_msg_.is_fire ? 1U : 0U;
-    fire_notify_topic_.Publish(fire_notify);
-    gimbal_plan_topic_.Publish(gimbal_plan_msg_);
-    send_topic_.Publish(send_msg_);
+    const bool final_fire = gimbal_plan_msg_.control && gimbal_plan_msg_.fire;
+    LogFireState(target_msg, final_fire, publish_bullet_speed);
+
+    AimerHostGimbalTarget host_gimbal{};
+    if (gimbal_plan_msg_.control)
+    {
+      host_gimbal.pit = gimbal_plan_msg_.pitch;
+      host_gimbal.yaw = gimbal_plan_msg_.yaw;
+      host_gimbal.pit_dot = gimbal_plan_msg_.pitch_vel;
+      host_gimbal.yaw_dot = gimbal_plan_msg_.yaw_vel;
+      host_gimbal.pit_ddot = gimbal_plan_msg_.pitch_acc;
+      host_gimbal.yaw_ddot = gimbal_plan_msg_.yaw_acc;
+    }
+    AimerHostFireNotify host_fire{final_fire};
+
+    host_gimbal_topic_.Publish(host_gimbal);
+    host_fire_topic_.Publish(host_fire);
   };
 
   if (target_msg.id != last_target_id_)
@@ -387,16 +400,8 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
       AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
   const double pitch = -(trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD);
 
-  send_msg_.is_fire =
+  const bool raw_fire =
       ShouldAutoFire(final_xyz, aim_point.view_angle, aim_point.shootable, yaw);
-  send_msg_.position.x() = final_xyz.x();
-  send_msg_.position.y() = final_xyz.y();
-  send_msg_.position.z() = final_xyz.z();
-  send_msg_.v_yaw = target_msg.v_yaw;
-  send_msg_.pitch = pitch;
-  send_msg_.yaw = yaw;
-
-  BuildGimbalPlan(target_msg, delay_time, true, send_msg_.is_fire, yaw, pitch,
-                  bullet_speed);
+  BuildGimbalPlan(target_msg, delay_time, true, raw_fire, yaw, pitch, bullet_speed);
   publish_outputs(bullet_speed);
 }

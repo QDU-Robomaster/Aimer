@@ -24,7 +24,6 @@
 
 #include "AimerTargetModel.hpp"
 #include "CameraFrameSync.hpp"
-#include "GimbalPlan.hpp"
 #include "VisionPreview.hpp"
 
 /**
@@ -92,20 +91,20 @@ class AimerPreview : public LibXR::Application
   {
     uint64_t image_timestamp_us{0};
     bool have_target{false};
-    bool have_send{false};
-    bool have_plan{false};
-    uint64_t send_timestamp_us{0};
+    bool have_host_target{false};
+    bool have_host_fire{false};
     ArmorTrackerTarget target{};
-    AimerSend send{};
-    GimbalPlan plan{};
+    AimerHostGimbalTarget host_target{};
+    AimerHostFireNotify host_fire{};
   };
 
   /**
-   * @brief 注册 tracker / Aimer topic 回调。
+   * @brief 注册 tracker 与 host topic 回调。
    */
   void RegisterTopics()
   {
     LibXR::Topic::Domain tracker_domain("tracker");
+    LibXR::Topic::Domain host_domain("host");
 
     LibXR::Topic target_topic =
         LibXR::Topic::FindOrCreate<ArmorTrackerTarget>("target", &tracker_domain);
@@ -113,32 +112,42 @@ class AimerPreview : public LibXR::Application
         [](bool, AimerPreview* self, LibXR::RawData& data)
         {
           auto* target = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
-          self->OnTarget(*target);
+          if (target != nullptr && data.size_ == sizeof(ArmorTrackerTarget))
+          {
+            self->OnTarget(*target);
+          }
         },
         this);
     target_topic.RegisterCallback(target_callback);
 
-    LibXR::Topic send_topic =
-        LibXR::Topic::FindOrCreate<AimerSend>("send", &tracker_domain);
-    auto send_callback = LibXR::Topic::Callback::Create(
+    LibXR::Topic host_target_topic =
+        LibXR::Topic::FindOrCreate<AimerHostGimbalTarget>("target_euler",
+                                                          &host_domain);
+    auto host_target_callback = LibXR::Topic::Callback::Create(
         [](bool, AimerPreview* self, LibXR::RawData& data)
         {
-          auto* send = reinterpret_cast<AimerSend*>(data.addr_);
-          self->OnSend(*send);
+          auto* target = reinterpret_cast<AimerHostGimbalTarget*>(data.addr_);
+          if (target != nullptr && data.size_ == sizeof(AimerHostGimbalTarget))
+          {
+            self->OnHostTarget(*target);
+          }
         },
         this);
-    send_topic.RegisterCallback(send_callback);
+    host_target_topic.RegisterCallback(host_target_callback);
 
-    LibXR::Topic plan_topic =
-        LibXR::Topic::FindOrCreate<GimbalPlan>("gimbal_plan", &tracker_domain);
-    auto plan_callback = LibXR::Topic::Callback::Create(
+    LibXR::Topic host_fire_topic =
+        LibXR::Topic::FindOrCreate<AimerHostFireNotify>("fire_notify", &host_domain);
+    auto host_fire_callback = LibXR::Topic::Callback::Create(
         [](bool, AimerPreview* self, LibXR::RawData& data)
         {
-          auto* plan = reinterpret_cast<GimbalPlan*>(data.addr_);
-          self->OnPlan(*plan);
+          auto* fire = reinterpret_cast<AimerHostFireNotify*>(data.addr_);
+          if (fire != nullptr && data.size_ == sizeof(AimerHostFireNotify))
+          {
+            self->OnHostFire(*fire);
+          }
         },
         this);
-    plan_topic.RegisterCallback(plan_callback);
+    host_fire_topic.RegisterCallback(host_fire_callback);
   }
 
   /**
@@ -155,36 +164,23 @@ class AimerPreview : public LibXR::Application
   }
 
   /**
-   * @brief 更新最新 Aimer send 缓存。
+   * @brief 更新最新 host 云台目标缓存。
    */
-  void OnSend(const AimerSend& send)
+  void OnHostTarget(const AimerHostGimbalTarget& target)
   {
     LibXR::Mutex::LockGuard lock(snapshot_lock_);
-    send_snapshot_ = send;
-    send_timestamp_us_ =
-        have_plan_ ? plan_snapshot_.image_timestamp_us
-                   : (have_target_ ? target_snapshot_.image_timestamp_us : 0);
-    have_send_ = true;
-    if (send_timestamp_us_ != 0)
-    {
-      Snapshot& snapshot = MutableSnapshot(send_timestamp_us_);
-      snapshot.have_send = true;
-      snapshot.send_timestamp_us = send_timestamp_us_;
-      snapshot.send = send;
-    }
+    host_target_snapshot_ = target;
+    have_host_target_ = true;
   }
 
   /**
-   * @brief 更新最新 gimbal plan 缓存。
+   * @brief 更新最新 host 发射许可缓存。
    */
-  void OnPlan(const GimbalPlan& plan)
+  void OnHostFire(const AimerHostFireNotify& fire)
   {
     LibXR::Mutex::LockGuard lock(snapshot_lock_);
-    plan_snapshot_ = plan;
-    have_plan_ = true;
-    Snapshot& snapshot = MutableSnapshot(plan.image_timestamp_us);
-    snapshot.have_plan = true;
-    snapshot.plan = plan;
+    host_fire_snapshot_ = fire;
+    have_host_fire_ = true;
   }
 
   /**
@@ -228,10 +224,20 @@ class AimerPreview : public LibXR::Application
             break;
           }
         }
-        const bool has_any =
-            snapshot.have_target || snapshot.have_send || snapshot.have_plan;
+        if (!snapshot.have_host_target && have_host_target_)
+        {
+          snapshot.have_host_target = true;
+          snapshot.host_target = host_target_snapshot_;
+        }
+        if (!snapshot.have_host_fire && have_host_fire_)
+        {
+          snapshot.have_host_fire = true;
+          snapshot.host_fire = host_fire_snapshot_;
+        }
+        const bool has_any = snapshot.have_target || snapshot.have_host_target ||
+                             snapshot.have_host_fire;
         const bool complete =
-            snapshot.have_send ||
+            (snapshot.have_host_target && snapshot.have_host_fire) ||
             (snapshot.have_target && !snapshot.target.tracking);
         if (complete || (has_any && std::chrono::steady_clock::now() >= deadline))
         {
@@ -314,14 +320,37 @@ class AimerPreview : public LibXR::Application
   }
 
   /**
-   * @brief 将 tracker 目标中的点投影到图像像素。
+   * @brief 将 host 角度命令转换成 tracker output frame 中的预览点。
    */
-  static bool ProjectTargetPoint(const LibXR::Position<double>& point,
-                                 const Eigen::Quaterniond& q_gimbal_to_world,
-                                 cv::Point& uv)
+  static std::optional<Eigen::Vector3d> HostTargetPreviewPoint(
+      const Snapshot& snapshot)
   {
-    const Eigen::Vector3d tracker_point(point.x(), point.y(), point.z());
-    return ProjectOutputPoint(tracker_point, q_gimbal_to_world, uv);
+    if (!snapshot.have_host_target)
+    {
+      return std::nullopt;
+    }
+
+    const auto& target = snapshot.host_target;
+    if (!std::isfinite(target.pit) || !std::isfinite(target.yaw))
+    {
+      return std::nullopt;
+    }
+
+    if (std::abs(target.pit) < 1e-6f && std::abs(target.yaw) < 1e-6f)
+    {
+      return std::nullopt;
+    }
+
+    double horizontal_distance = 1.0;
+    if (snapshot.have_target && snapshot.target.tracking)
+    {
+      horizontal_distance = std::max(
+          0.2, AimerDetail::HorizontalDistance(snapshot.target.position));
+    }
+
+    return Eigen::Vector3d(horizontal_distance * std::cos(target.yaw),
+                           horizontal_distance * std::tan(-target.pit),
+                           horizontal_distance * std::sin(target.yaw));
   }
 
   /**
@@ -348,7 +377,7 @@ class AimerPreview : public LibXR::Application
   }
 
   /**
-   * @brief 从 tracker target 和 Aimer send 画出预览。
+   * @brief 从 tracker target 和 host 输出画出预览。
    */
   void DrawPreview(cv::Mat& canvas, const Snapshot& snapshot,
                    const Eigen::Quaterniond& q_gimbal_to_world)
@@ -405,12 +434,14 @@ class AimerPreview : public LibXR::Application
     }
 
     cv::Point aim_uv;
-    if (snapshot.have_send &&
-        ProjectTargetPoint(snapshot.send.position, q_gimbal_to_world, aim_uv))
+    const bool host_fire = snapshot.have_host_fire && snapshot.host_fire.isfire;
+    const auto host_target_point = HostTargetPreviewPoint(snapshot);
+    if (host_target_point.has_value() &&
+        ProjectOutputPoint(*host_target_point, q_gimbal_to_world, aim_uv))
     {
       cv::drawMarker(canvas, aim_uv, cv::Scalar(0, 0, 255), cv::MARKER_TILTED_CROSS,
-                     snapshot.send.is_fire ? 22 : 18, 2, cv::LINE_AA);
-      if (snapshot.send.is_fire)
+                     host_fire ? 22 : 18, 2, cv::LINE_AA);
+      if (host_fire)
       {
         cv::circle(canvas, aim_uv, 10, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
       }
@@ -425,7 +456,7 @@ class AimerPreview : public LibXR::Application
         std::string("aimer ") +
         (snapshot.have_target && snapshot.target.tracking ? "TRACK" : "NO_TARGET") +
         " id=" + id_name +
-        " fire=" + std::to_string(snapshot.have_send && snapshot.send.is_fire ? 1 : 0);
+        " fire=" + std::to_string(host_fire ? 1 : 0);
     cv::putText(canvas, header, cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.75,
                 cv::Scalar(40, 240, 40), 2, cv::LINE_AA);
   }
@@ -573,12 +604,11 @@ class AimerPreview : public LibXR::Application
   std::thread worker_thread_{};
   LibXR::Mutex snapshot_lock_{};
   bool have_target_{false};
-  bool have_send_{false};
-  bool have_plan_{false};
-  uint64_t send_timestamp_us_{0};
+  bool have_host_target_{false};
+  bool have_host_fire_{false};
   ArmorTrackerTarget target_snapshot_{};
-  AimerSend send_snapshot_{};
-  GimbalPlan plan_snapshot_{};
+  AimerHostGimbalTarget host_target_snapshot_{};
+  AimerHostFireNotify host_fire_snapshot_{};
   std::deque<Snapshot> snapshot_history_{};
   static constexpr std::size_t kMaxSnapshotHistory = 256;
 };
