@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <Eigen/Dense>
 
@@ -177,6 +178,7 @@ inline void AimerCore::SetupGimbalPlanSolvers()
 inline void AimerCore::ResetGimbalPlanHistory()
 {
   last_plan_mpc_ = false;
+  ResetFireHold();
 }
 
 /**
@@ -240,11 +242,13 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   const double plan_error =
       std::hypot(reference(0, fire_index) - yaw_solver_->work->x(0, fire_index),
                  reference(2, fire_index) - pitch_solver_->work->x(0, fire_index));
+  last_fire_plan_error_ = plan_error;
+  last_fire_plan_ok_ = plan_error < cfg_.mpc_fire_thresh;
 
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   gimbal_plan_msg_.control = true;
-  gimbal_plan_msg_.fire = fire && plan_error < cfg_.mpc_fire_thresh;
+  gimbal_plan_msg_.fire = fire && last_fire_plan_ok_;
   gimbal_plan_msg_.target_yaw = static_cast<float>(target_yaw);
   gimbal_plan_msg_.target_pitch = static_cast<float>(target_pitch);
   gimbal_plan_msg_.yaw = static_cast<float>(planned_yaw);
@@ -300,6 +304,9 @@ inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
                                    double delay_time, bool control, bool fire,
                                    double yaw, double pitch, double bullet_speed)
 {
+  last_fire_plan_error_ = std::numeric_limits<double>::quiet_NaN();
+  last_fire_plan_ok_ = false;
+
   if (!control)
   {
     BuildFiniteDifferenceGimbalPlan(target_msg, false, fire, yaw, pitch);

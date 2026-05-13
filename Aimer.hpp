@@ -49,6 +49,7 @@ constructor_args:
     enable_runtime_log: true
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
+    fire_hold_s: 0.08
 template_args:
   - Info:
       width: 1280
@@ -70,6 +71,7 @@ depends:
 #include <Eigen/Dense>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "ArmorTracker.hpp"
@@ -262,6 +264,8 @@ struct AimerConfig
     double bullet_speed_log_delta{0.05};
     /// 热量变化超过该阈值时打印反馈日志。
     double heat_log_delta{1.0};
+    /// 自动开火输出在短暂掉门控时的保持时间。
+    double fire_hold_s{0.08};
 };
 
 /**
@@ -331,6 +335,14 @@ class AimerCore : public LibXR::Application
   bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double selected_view_angle,
                       bool shootable, double yaw);
   /**
+   * @brief 清理自动开火保持状态。
+   */
+  void ResetFireHold();
+  /**
+   * @brief 对已通过的开火门控做短时保持，减少一帧级碎片化。
+   */
+  bool ApplyFireHold(bool raw_fire, bool hold_allowed, uint64_t image_timestamp_us);
+  /**
    * @brief 初始化 yaw 和 pitch TinyMPC 求解器。
    */
   void SetupGimbalPlanSolvers();
@@ -363,12 +375,27 @@ class AimerCore : public LibXR::Application
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
   bool has_last_command_{false};
   double last_command_yaw_{0.0};
+  bool fire_hold_active_{false};
+  uint64_t fire_hold_until_us_{0};
+  bool last_fire_hold_used_{false};
   bool has_gimbal_rotation_{false};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};
   bool last_plan_mpc_{false};
+  bool last_fire_auto_fire_{false};
+  bool last_fire_shootable_{false};
+  bool last_fire_has_gimbal_rotation_{false};
+  bool last_fire_had_last_command_{false};
+  bool last_fire_command_stable_{false};
+  bool last_fire_gimbal_aligned_{false};
+  bool last_fire_plan_ok_{false};
+  double last_fire_yaw_threshold_{0.0};
+  double last_fire_command_error_yaw_{0.0};
+  double last_fire_gimbal_error_yaw_{0.0};
+  double last_fire_plan_error_{std::numeric_limits<double>::quiet_NaN()};
   bool have_logged_fire_state_{false};
   bool last_logged_fire_state_{false};
+  bool last_logged_fire_hold_used_{false};
   bool have_logged_bullet_speed_{false};
   double last_logged_bullet_speed_{0.0};
   bool have_logged_heat_status_{false};

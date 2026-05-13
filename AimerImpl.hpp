@@ -199,33 +199,28 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
   }
 
   LibXR::Mutex::LockGuard lock(runtime_log_lock_);
-  if (have_logged_fire_state_ && fire == last_logged_fire_state_)
+  if (have_logged_fire_state_ && fire == last_logged_fire_state_ &&
+      last_fire_hold_used_ == last_logged_fire_hold_used_)
   {
     return;
   }
 
-  const double current_heat = last_logged_heat_;
-  const bool heat_valid = have_logged_heat_status_;
-  if (heat_valid)
-  {
-    XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
-        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
-        target_msg.tracking ? 1 : 0,
-        static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed, current_heat,
-        last_logged_heat_limit_, last_logged_cooling_);
-  }
-  else
-  {
-    XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f",
-        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
-        target_msg.tracking ? 1 : 0,
-        static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed);
-  }
+  XR_LOG_INFO(
+      "Aimer fire=%s id=%d tr=%d ts=%llu y=%.3f p=%.3f bs=%.1f af=%d sh=%d gr=%d lc=%d cs=%d ga=%d hold=%d th=%.4f ce=%.4f ge=%.4f mpc=%d po=%d pe=%.4f",
+      fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
+      target_msg.tracking ? 1 : 0,
+      static_cast<unsigned long long>(target_msg.image_timestamp_us),
+      gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed,
+      last_fire_auto_fire_ ? 1 : 0, last_fire_shootable_ ? 1 : 0,
+      last_fire_has_gimbal_rotation_ ? 1 : 0,
+      last_fire_had_last_command_ ? 1 : 0,
+      last_fire_command_stable_ ? 1 : 0,
+      last_fire_gimbal_aligned_ ? 1 : 0, last_fire_hold_used_ ? 1 : 0,
+      last_fire_yaw_threshold_, last_fire_command_error_yaw_,
+      last_fire_gimbal_error_yaw_, last_plan_mpc_ ? 1 : 0,
+      last_fire_plan_ok_ ? 1 : 0, last_fire_plan_error_);
   last_logged_fire_state_ = fire;
+  last_logged_fire_hold_used_ = last_fire_hold_used_;
   have_logged_fire_state_ = true;
 }
 
@@ -256,6 +251,15 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
 {
   const double yaw_threshold =
       AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz, selected_view_angle);
+  last_fire_auto_fire_ = cfg_.auto_fire;
+  last_fire_shootable_ = shootable;
+  last_fire_has_gimbal_rotation_ = false;
+  last_fire_had_last_command_ = has_last_command_;
+  last_fire_command_stable_ = false;
+  last_fire_gimbal_aligned_ = false;
+  last_fire_yaw_threshold_ = yaw_threshold;
+  last_fire_command_error_yaw_ = 0.0;
+  last_fire_gimbal_error_yaw_ = 0.0;
 
   auto remember_command = [this, yaw]()
   {
@@ -276,6 +280,7 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
     has_gimbal_rotation = has_gimbal_rotation_;
     gimbal_rotation = gimbal_rotation_;
   }
+  last_fire_has_gimbal_rotation_ = has_gimbal_rotation;
   if (!has_gimbal_rotation)
   {
     remember_command();
@@ -285,6 +290,7 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
   const auto gimbal_euler = gimbal_rotation.ToEulerAngleZYX();
   const double gimbal_yaw = gimbal_euler[2];
 
+  last_fire_had_last_command_ = has_last_command_;
   if (!has_last_command_)
   {
     remember_command();
@@ -294,12 +300,74 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
   const double command_error_yaw =
       std::abs(AimerDetail::LimitRad(last_command_yaw_ - yaw));
   const double gimbal_error_yaw = std::abs(AimerDetail::LimitRad(gimbal_yaw - yaw));
+  last_fire_command_error_yaw_ = command_error_yaw;
+  last_fire_gimbal_error_yaw_ = gimbal_error_yaw;
 
   const bool command_stable = command_error_yaw < yaw_threshold * 2.0;
   const bool gimbal_aligned = gimbal_error_yaw < yaw_threshold;
+  last_fire_command_stable_ = command_stable;
+  last_fire_gimbal_aligned_ = gimbal_aligned;
 
   remember_command();
   return command_stable && gimbal_aligned;
+}
+
+/**
+ * @brief 清理自动开火保持状态。
+ */
+inline void AimerCore::ResetFireHold()
+{
+  fire_hold_active_ = false;
+  fire_hold_until_us_ = 0;
+  last_fire_hold_used_ = false;
+}
+
+/**
+ * @brief 对已通过的开火门控做短时保持，减少一帧级碎片化。
+ * @param raw_fire 本帧原始开火门控。
+ * @param hold_allowed 当前目标和瞄点是否允许保持开火。
+ * @param image_timestamp_us 当前图像时间戳，单位 us。
+ * @return 应发布到 host/fire_notify 的开火许可。
+ */
+inline bool AimerCore::ApplyFireHold(bool raw_fire, bool hold_allowed,
+                                     uint64_t image_timestamp_us)
+{
+  last_fire_hold_used_ = false;
+
+  if (!hold_allowed)
+  {
+    ResetFireHold();
+    return raw_fire;
+  }
+
+  if (!std::isfinite(cfg_.fire_hold_s) || cfg_.fire_hold_s <= 0.0)
+  {
+    ResetFireHold();
+    return raw_fire;
+  }
+  if (image_timestamp_us == 0)
+  {
+    ResetFireHold();
+    return raw_fire;
+  }
+
+  const auto hold_us =
+      static_cast<uint64_t>(std::min(cfg_.fire_hold_s, 1.0) * 1000000.0);
+  if (raw_fire)
+  {
+    fire_hold_active_ = true;
+    fire_hold_until_us_ = image_timestamp_us + hold_us;
+    return true;
+  }
+
+  if (fire_hold_active_ && image_timestamp_us <= fire_hold_until_us_)
+  {
+    last_fire_hold_used_ = true;
+    return true;
+  }
+
+  ResetFireHold();
+  return false;
 }
 
 /**
@@ -314,10 +382,26 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   preview_frame.image_timestamp_us = target_msg.image_timestamp_us;
   preview_frame.have_target = true;
   preview_frame.target = target_msg;
+  bool fire_hold_allowed = false;
+  last_fire_auto_fire_ = cfg_.auto_fire;
+  last_fire_shootable_ = false;
+  last_fire_has_gimbal_rotation_ = false;
+  last_fire_had_last_command_ = has_last_command_;
+  last_fire_command_stable_ = false;
+  last_fire_gimbal_aligned_ = false;
+  last_fire_plan_ok_ = false;
+  last_fire_yaw_threshold_ = 0.0;
+  last_fire_command_error_yaw_ = 0.0;
+  last_fire_gimbal_error_yaw_ = 0.0;
+  last_fire_plan_error_ = std::numeric_limits<double>::quiet_NaN();
 
   auto publish_outputs = [&](double publish_bullet_speed)
   {
-    const bool final_fire = gimbal_plan_msg_.control && gimbal_plan_msg_.fire;
+    const bool raw_final_fire = gimbal_plan_msg_.control && gimbal_plan_msg_.fire;
+    const bool final_fire =
+        ApplyFireHold(raw_final_fire, fire_hold_allowed && gimbal_plan_msg_.control,
+                      target_msg.image_timestamp_us);
+    gimbal_plan_msg_.fire = final_fire;
     LogFireState(target_msg, final_fire, publish_bullet_speed);
 
     AimerHostGimbalTarget host_gimbal{};
@@ -418,5 +502,6 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   const bool raw_fire =
       ShouldAutoFire(final_xyz, aim_point.view_angle, aim_point.shootable, yaw);
   BuildGimbalPlan(target_msg, delay_time, true, raw_fire, yaw, pitch, bullet_speed);
+  fire_hold_allowed = aim_point.shootable;
   publish_outputs(bullet_speed);
 }
