@@ -12,9 +12,8 @@
 - 输出 `host/target_euler`：DevC `HostData` 接收的云台目标，载荷为角度、角速度和角加速度前馈。
 - 输出 `host/fire_notify`：DevC `LauncherCMD` 接收的发射许可，值与最终云台计划开火门控保持一致。
 
-坐标约定：`ArmorTrackerTarget` 使用 `x` 向前、`y` 向上、`z` 向左；
-Aimer 的 yaw、半径展开、水平距离和弹道解算都以 `x-z` 为水平面，
-高度使用 `y`。
+坐标约定：`ArmorTrackerTarget` 使用右手系，`x` 向右、`y` 向前、`z` 向上。
+Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，高度使用 `z`。
 
 ## 代码结构
 

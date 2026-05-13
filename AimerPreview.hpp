@@ -254,19 +254,19 @@ class AimerPreview : public LibXR::Application
   }
 
   /**
-   * @brief 将 tracker output frame 点转到 world frame。
+   * @brief 将 tracker output frame 点转到 Webots/gimbal world frame。
    */
   static Eigen::Vector3d OutputFrameToWorld(const Eigen::Vector3d& point)
   {
-    return {point.z(), -point.x(), -point.y()};
+    return {point.y(), -point.x(), point.z()};
   }
 
   /**
-   * @brief 将 tracker output frame 装甲板 yaw 转到 world frame。
+   * @brief 将 tracker output frame 装甲板 yaw 转到 Webots/gimbal world frame。
    */
   static double OutputYawToWorld(double yaw)
   {
-    return AimerDetail::LimitRad(yaw + AimerDetail::PI * 0.5);
+    return AimerDetail::LimitRad(yaw);
   }
 
   /**
@@ -348,9 +348,9 @@ class AimerPreview : public LibXR::Application
           0.2, AimerDetail::HorizontalDistance(snapshot.target.position));
     }
 
-    return Eigen::Vector3d(horizontal_distance * std::cos(target.yaw),
-                           horizontal_distance * std::tan(-target.pit),
-                           horizontal_distance * std::sin(target.yaw));
+    return Eigen::Vector3d(-horizontal_distance * std::sin(target.yaw),
+                           horizontal_distance * std::cos(target.yaw),
+                           horizontal_distance * std::tan(-target.pit));
   }
 
   /**

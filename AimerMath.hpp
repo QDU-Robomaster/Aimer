@@ -53,39 +53,39 @@ inline double LimitRad(double angle)
 }
 
 /**
- * @brief 计算 tracker x-z 水平面距离。
+ * @brief 计算 tracker x-y 水平面距离。
  * @tparam Derived Eigen 向量或表达式类型。
- * @param point 使用其 x 和 z 分量的点。
+ * @param point 使用其 x 和 y 分量的点。
  * @return 水平距离，单位 m。
  */
 template <typename Derived>
 inline double HorizontalDistance(const Eigen::MatrixBase<Derived>& point)
 {
-  return std::hypot(point.x(), point.z());
+  return std::hypot(point.x(), point.y());
 }
 
 /**
- * @brief 计算 tracker x 前、z 左水平面中的 yaw 方位角。
+ * @brief 计算 tracker x 右、y 前水平面中的 yaw 方位角。
  * @tparam Derived Eigen 向量或表达式类型。
- * @param point 使用其 x 和 z 分量的点。
+ * @param point 使用其 x 和 y 分量的点。
  * @return yaw 方位角，单位 rad。
  */
 template <typename Derived>
 inline double BearingYaw(const Eigen::MatrixBase<Derived>& point)
 {
-  return std::atan2(point.z(), point.x());
+  return std::atan2(-point.x(), point.y());
 }
 
 /**
  * @brief 从 tracker 坐标点中取出弹道高度坐标。
  * @tparam Derived Eigen 向量或表达式类型。
- * @param point 使用其 y 分量作为高度的点。
+ * @param point 使用其 z 分量作为高度的点。
  * @return 高度，单位 m。
  */
 template <typename Derived>
 inline double BallisticHeight(const Eigen::MatrixBase<Derived>& point)
 {
-  return point.y();
+  return point.z();
 }
 
 /**
@@ -126,8 +126,8 @@ inline double DynamicYawFireThreshold(const AimerConfig& cfg,
 /**
  * @brief 解算低抛弹道 pitch 和飞行时间。
  * @param bullet_speed 弹速，单位 m/s。
- * @param horizontal_distance tracker x-z 平面距离，单位 m。
- * @param target_height tracker y 方向目标高度，单位 m。
+ * @param horizontal_distance tracker x-y 平面距离，单位 m。
+ * @param target_height tracker z 方向目标高度，单位 m。
  * @return 弹道解或无解标志。
  */
 inline TrajectorySolution SolveTrajectoryPitch(double bullet_speed,

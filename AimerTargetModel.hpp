@@ -82,10 +82,10 @@ struct PredictedTarget
       const double angle = LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
-      const double armor_x = msg.position.x() + radius * std::cos(angle);
-      const double armor_y =
-          use_length_height ? msg.position.y() + msg.dz : msg.position.y();
-      const double armor_z = msg.position.z() + radius * std::sin(angle);
+      const double armor_x = msg.position.x() - radius * std::sin(angle);
+      const double armor_y = msg.position.y() + radius * std::cos(angle);
+      const double armor_z =
+          use_length_height ? msg.position.z() + msg.dz : msg.position.z();
       armor_xyza_list.push_back({armor_x, armor_y, armor_z, angle});
     }
 
