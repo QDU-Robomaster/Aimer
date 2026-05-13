@@ -98,8 +98,14 @@ class AimerPreview : public LibXR::Application
     static const Eigen::Matrix3d kCameraToGimbal =
         (Eigen::Matrix3d() << 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0)
             .finished();
+    static const Eigen::Matrix3d kImuBasisToTrackerBasis =
+        (Eigen::Matrix3d() << 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+            .finished();
+    const Eigen::Matrix3d R_gimbal_to_world =
+        kImuBasisToTrackerBasis * q_gimbal_to_world.toRotationMatrix() *
+        kImuBasisToTrackerBasis.transpose();
     return kCameraToGimbal.transpose() *
-           q_gimbal_to_world.toRotationMatrix().transpose() * point_world;
+           R_gimbal_to_world.transpose() * point_world;
   }
 
   /**
