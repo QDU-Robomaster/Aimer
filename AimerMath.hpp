@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <utility>
 
 #include <Eigen/Dense>
 
@@ -103,33 +102,25 @@ struct TrajectorySolution
 };
 
 /**
- * @brief 为选中装甲板计算动态 yaw/pitch 开火阈值。
+ * @brief 为选中装甲板计算动态 yaw 开火阈值。
  * @param cfg Aimer 运行时配置。
  * @param target_xyz tracker 相机坐标系下的选中瞄点。
  * @param selected_view_angle 装甲板相对整车中心方位的视角。
- * @return yaw 和 pitch 阈值，单位 rad。
+ * @return yaw 阈值，单位 rad。
  */
-inline std::pair<double, double> DynamicFireThreshold(
-    const AimerConfig& cfg, const Eigen::Vector3d& target_xyz,
-    double selected_view_angle)
+inline double DynamicYawFireThreshold(const AimerConfig& cfg,
+                                      const Eigen::Vector3d& target_xyz,
+                                      double selected_view_angle)
 {
   const double horizontal_distance =
       std::max(MIN_HORIZONTAL_DISTANCE_M, HorizontalDistance(target_xyz));
-  const double distance = std::max(MIN_HORIZONTAL_DISTANCE_M, target_xyz.norm());
   const double facing_scale =
       std::clamp(std::cos(std::abs(selected_view_angle)), 0.25, 1.0);
   const double yaw_half =
       std::atan2(0.5 * SMALL_ARMOR_WIDTH_M * facing_scale, horizontal_distance);
-  const double pitch_half = std::atan2(0.5 * ARMOR_HEIGHT_M, distance);
   const double spread_yaw = std::atan2(FIRE_BULLET_SPREAD_M, horizontal_distance);
-  const double spread_pitch = std::atan2(FIRE_BULLET_SPREAD_M, distance);
-  const double yaw_threshold =
-      std::clamp(yaw_half - spread_yaw, cfg.min_fire_threshold,
-                 cfg.max_fire_threshold);
-  const double pitch_threshold =
-      std::clamp(pitch_half - spread_pitch, cfg.min_fire_threshold,
-                 cfg.max_fire_threshold);
-  return {yaw_threshold, pitch_threshold};
+  return std::clamp(yaw_half - spread_yaw, cfg.min_fire_threshold,
+                    cfg.max_fire_threshold);
 }
 
 /**

@@ -248,8 +248,8 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
                                   double selected_view_angle, bool shootable,
                                   double yaw)
 {
-  const auto [yaw_threshold, pitch_threshold] =
-      AimerDetail::DynamicFireThreshold(cfg_, target_xyz, selected_view_angle);
+  const double yaw_threshold =
+      AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz, selected_view_angle);
 
   auto remember_command = [this, yaw]()
   {
