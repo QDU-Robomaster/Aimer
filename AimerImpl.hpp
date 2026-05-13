@@ -16,26 +16,15 @@
  * @brief 构造 Aimer 并注册 tracker、referee、gimbal 输入 topic 回调。
  */
 inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
-                    Config cfg)
+                    Config cfg, bool subscribe_target_topic)
     : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
 {
   SetupGimbalPlanSolvers();
   RegisterRuntimeLogCallbacks();
-
-  LibXR::Topic::Domain tracker_domain("tracker");
-  LibXR::Topic target_topic =
-      LibXR::Topic::FindOrCreate<ArmorTrackerTarget>("target", &tracker_domain);
-  auto target_callback = LibXR::Topic::Callback::Create(
-      [](bool, AimerCore* self, LibXR::RawData& data)
-      {
-        auto* target_msg = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
-        if (target_msg != nullptr && data.size_ == sizeof(ArmorTrackerTarget))
-        {
-          self->TargetCallback(*target_msg);
-        }
-      },
-      this);
-  target_topic.RegisterCallback(target_callback);
+  if (subscribe_target_topic)
+  {
+    RegisterTargetCallback();
+  }
 
   LibXR::Topic::Domain gimbal_domain("gimbal");
   LibXR::Topic gimbal_rotation_topic =
@@ -55,6 +44,47 @@ inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager
   gimbal_rotation_topic.RegisterCallback(gimbal_rotation_callback);
 
   app.Register(*this);
+}
+
+/**
+ * @brief 设置内置 preview 的状态接收器。
+ */
+inline void AimerCore::SetPreviewSink(PreviewSink sink, void* context)
+{
+  preview_sink_ = sink;
+  preview_context_ = context;
+}
+
+/**
+ * @brief 注册轻量 tracker/target 回调。
+ */
+inline void AimerCore::RegisterTargetCallback()
+{
+  LibXR::Topic::Domain tracker_domain("tracker");
+  LibXR::Topic target_topic =
+      LibXR::Topic::FindOrCreate<ArmorTrackerTarget>("target", &tracker_domain);
+  auto target_callback = LibXR::Topic::Callback::Create(
+      [](bool, AimerCore* self, LibXR::RawData& data)
+      {
+        auto* target_msg = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
+        if (target_msg != nullptr && data.size_ == sizeof(ArmorTrackerTarget))
+        {
+          self->TargetCallback(*target_msg);
+        }
+      },
+      this);
+  target_topic.RegisterCallback(target_callback);
+}
+
+/**
+ * @brief 提交本帧 Aimer 状态给内置 preview。
+ */
+inline void AimerCore::PublishPreviewState(const AimerPreviewFrame& state)
+{
+  if (preview_sink_ != nullptr)
+  {
+    preview_sink_(preview_context_, state);
+  }
 }
 
 /**
@@ -306,6 +336,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  AimerPreviewFrame preview_frame{};
+  preview_frame.image_timestamp_us = target_msg.image_timestamp_us;
+  preview_frame.have_target = true;
+  preview_frame.target = target_msg;
 
   auto publish_outputs = [&](double publish_bullet_speed)
   {
@@ -326,6 +360,9 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 
     host_gimbal_topic_.Publish(host_gimbal);
     host_fire_topic_.Publish(host_fire);
+    preview_frame.have_host_fire = true;
+    preview_frame.host_fire = host_fire;
+    PublishPreviewState(preview_frame);
   };
 
   if (target_msg.id != last_target_id_)
@@ -396,6 +433,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   }
 
   const Eigen::Vector3d final_xyz = aim_point.xyza.head<3>();
+  preview_frame.aim_point_valid = true;
+  preview_frame.aim_point = final_xyz;
+  preview_frame.aim_armor_index = aim_point.armor_index;
+  preview_frame.aim_xyza = aim_point.xyza;
   const double yaw = AimerDetail::LimitRad(
       AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
   const double pitch = -(trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD);

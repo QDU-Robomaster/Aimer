@@ -177,6 +177,31 @@ struct AimerHostFireNotify
 static_assert(sizeof(AimerHostFireNotify) == 1);
 
 /**
+ * @brief Aimer 内置预览绘制所需的同帧状态。
+ */
+struct AimerPreviewFrame
+{
+  /// 图像传感器时间戳，单位 us。
+  uint64_t image_timestamp_us{};
+  /// 当前帧是否带有 tracker 目标消息。
+  bool have_target{false};
+  /// tracker 原始目标消息。
+  ArmorTrackerTarget target{};
+  /// 是否存在 Aimer 选中的预测瞄点。
+  bool aim_point_valid{false};
+  /// 预测后的瞄点中心，使用 tracker 输出坐标系。
+  Eigen::Vector3d aim_point{Eigen::Vector3d::Zero()};
+  /// 预测选中的装甲板索引。
+  int aim_armor_index{-1};
+  /// 预测选中的装甲板中心和 yaw。
+  Eigen::Vector4d aim_xyza{Eigen::Vector4d::Zero()};
+  /// 是否已经生成 host/fire_notify 输出。
+  bool have_host_fire{false};
+  /// 本帧发射许可输出。
+  AimerHostFireNotify host_fire{};
+};
+
+/**
  * @brief 由 xrobot YAML 生成的 Aimer 运行时配置。
  */
 struct AimerConfig
@@ -248,19 +273,34 @@ class AimerCore : public LibXR::Application
 {
  public:
   using Config = AimerConfig;
+  using PreviewSink = void (*)(void*, const AimerPreviewFrame&);
 
   /**
    * @brief 创建 Aimer 模块并注册 topic 回调。
    */
   AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
-            Config cfg);
+            Config cfg, bool subscribe_target_topic = true);
 
   /**
    * @brief LibXR 应用要求的周期监控钩子。
    */
   void OnMonitor() override {}
 
+ protected:
+  /**
+   * @brief 设置由模板 Aimer 持有的 preview 状态接收器。
+   */
+  void SetPreviewSink(PreviewSink sink, void* context);
+  /**
+   * @brief 处理一帧 tracker 目标消息并发布 host 输出。
+   */
+  void TargetCallback(const ArmorTrackerTarget& target_msg);
+
  private:
+  /**
+   * @brief 注册轻量 tracker/target topic 回调。
+   */
+  void RegisterTargetCallback();
   /**
    * @brief 注册裁判系统与发射机构运行期日志回调。
    */
@@ -288,9 +328,9 @@ class AimerCore : public LibXR::Application
    */
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
   /**
-   * @brief 处理一帧 tracker 目标消息并发布 host 输出。
+   * @brief 提交本帧 Aimer 状态给内置 preview。
    */
-  void TargetCallback(const ArmorTrackerTarget& target_msg);
+  void PublishPreviewState(const AimerPreviewFrame& state);
   /**
    * @brief 根据命令稳定性和云台对准情况评估自动开火门控。
    */
@@ -345,6 +385,8 @@ class AimerCore : public LibXR::Application
   TinySolver* pitch_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
   mutable LibXR::Mutex runtime_log_lock_{};
+  PreviewSink preview_sink_{nullptr};
+  void* preview_context_{nullptr};
 
   GimbalPlan gimbal_plan_msg_{};
 
@@ -367,24 +409,83 @@ class Aimer : public AimerCore
  public:
   using Config = AimerConfig;
   using FrameSync = CameraFrameSync<CameraInfoV>;
+  using TargetFramePacket = ArmorTrackerTargetFramePacket<CameraInfoV>;
+  using TargetFrameMessage = ArmorTrackerTargetFrameMessage<CameraInfoV>;
+  using SourceFrame = ArmorDetectionsSourceFrame<CameraInfoV>;
 
   Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg)
       : AimerCore(hw, app, cfg)
   {
     if (cfg.preview.enabled)
     {
-      XR_LOG_WARN("Aimer preview is enabled but no CameraFrameSync was passed");
+      XR_LOG_WARN(
+          "Aimer preview is enabled but no tracker/target_frame image source was passed");
     }
   }
 
   Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg,
         FrameSync& sync)
-      : AimerCore(hw, app, cfg),
+      : AimerCore(hw, app, cfg, false),
         preview_(std::in_place, hw, app,
-                 AimerDetail::MakeAimerPreviewConfig(cfg), sync)
+                 AimerDetail::MakeAimerPreviewConfig(cfg))
   {
+    (void)sync;
+    SetPreviewSink(
+        [](void* context, const AimerPreviewFrame& frame)
+        {
+          static_cast<Aimer*>(context)->SubmitPreviewFrame(frame);
+        },
+        this);
+    RegisterTargetFrameCallback();
   }
 
  private:
+  /**
+   * @brief 注册带同源图像帧的 tracker/target_frame topic。
+   */
+  void RegisterTargetFrameCallback()
+  {
+    LibXR::Topic::Domain tracker_domain("tracker");
+    target_frame_topic_ =
+        LibXR::Topic::FindOrCreate<TargetFrameMessage>("target_frame",
+                                                       &tracker_domain);
+    auto callback = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, LibXR::RawData& data)
+        {
+          auto* message = reinterpret_cast<TargetFrameMessage*>(data.addr_);
+          if (message == nullptr || data.size_ != sizeof(TargetFrameMessage) ||
+              *message == nullptr || (*message)->target == nullptr)
+          {
+            return;
+          }
+          self->TargetFrameCallback(**message);
+        },
+        this);
+    target_frame_topic_.RegisterCallback(callback);
+  }
+
+  /**
+   * @brief 处理 tracker 同帧目标和源图像。
+   */
+  void TargetFrameCallback(const TargetFramePacket& frame)
+  {
+    current_source_frame_ = &frame.source_frame;
+    TargetCallback(*frame.target);
+    current_source_frame_ = nullptr;
+  }
+
+  /**
+   * @brief 将 Core 生成的预览状态交给内置 preview。
+   */
+  void SubmitPreviewFrame(const AimerPreviewFrame& frame)
+  {
+    if (preview_.has_value())
+    {
+      preview_->OnAimerFrame(frame, current_source_frame_);
+    }
+  }
+
+  LibXR::Topic target_frame_topic_ = LibXR::Topic();
+  const SourceFrame* current_source_frame_{nullptr};
   std::optional<AimerPreview<CameraInfoV>> preview_;
 };

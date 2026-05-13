@@ -82,8 +82,10 @@ struct PredictedTarget
       const double angle = LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
-      const double armor_x = msg.position.x() - radius * std::sin(angle);
-      const double armor_y = msg.position.y() + radius * std::cos(angle);
+      // tracker 输出帧为 x 右、y 前、z 上；该展开式对应
+      // ArmorTracker 内部 world frame 经 WorldToOutputFrame() 后的结果。
+      const double armor_x = msg.position.x() + radius * std::sin(angle);
+      const double armor_y = msg.position.y() - radius * std::cos(angle);
       const double armor_z =
           use_length_height ? msg.position.z() + msg.dz : msg.position.z();
       armor_xyza_list.push_back({armor_x, armor_y, armor_z, angle});

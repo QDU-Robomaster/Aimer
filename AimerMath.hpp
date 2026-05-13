@@ -29,8 +29,6 @@ inline constexpr double ARMOR_HEIGHT_M = 0.056;
 inline constexpr double FIRE_BULLET_SPREAD_M = 0.015;
 /// RoboMaster 装甲板固定安装俯仰角，单位 deg。
 inline constexpr double ARMOR_PITCH_DEG = 15.0;
-/// Aimer preview 等待匹配输出的最大时间，单位 ms。
-inline constexpr uint32_t PREVIEW_SYNC_WAIT_MS = 20;
 /// TinyMPC ADMM 最大迭代次数。
 inline constexpr int MPC_MAX_ITER = 10;
 
