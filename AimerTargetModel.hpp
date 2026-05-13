@@ -16,6 +16,17 @@
 
 namespace AimerDetail
 {
+/// 普通四面目标的正面可打窗口。
+inline constexpr double NORMAL_FACE_WINDOW_RAD = 60.0 * DEG2RAD;
+/// 普通旋转目标进入可打区的角度窗口。
+inline constexpr double NORMAL_APPROACH_WINDOW_RAD = 55.0 * DEG2RAD;
+/// 普通旋转目标离开可打区的角度窗口。
+inline constexpr double NORMAL_EXIT_WINDOW_RAD = 20.0 * DEG2RAD;
+/// 前哨站进入可打区的角度窗口。
+inline constexpr double OUTPOST_APPROACH_WINDOW_RAD = 70.0 * DEG2RAD;
+/// 前哨站离开可打区的角度窗口。
+inline constexpr double OUTPOST_EXIT_WINDOW_RAD = 30.0 * DEG2RAD;
+
 /**
  * @brief 单个预测状态下选中的装甲板和策略元数据。
  */
@@ -34,7 +45,7 @@ struct AimPoint
 };
 
 /**
- * @brief 根据最近装甲板计算出的弹道命令。
+ * @brief 根据策略选中装甲板计算出的弹道命令。
  */
 struct AimCommand
 {
@@ -124,6 +135,17 @@ inline double ViewAngle(const ArmorTrackerTarget& target, const Eigen::Vector4d&
 }
 
 /**
+ * @brief 将面索引限制到当前目标有效范围。
+ * @param face_index 输入面索引。
+ * @param face_count 当前目标面数。
+ * @return 有效面索引。
+ */
+inline int ClampFaceIndex(int face_index, int face_count)
+{
+  return std::clamp(face_index, 0, std::max(1, face_count) - 1);
+}
+
+/**
  * @brief 将选中的装甲板候选封装为 AimPoint。
  * @param target 预测后的 tracker 目标。
  * @param armor_index 选中的装甲板索引。
@@ -144,15 +166,40 @@ inline AimPoint BuildAimPoint(const PredictedTarget& target, int armor_index,
 }
 
 /**
+ * @brief 按指定索引选择装甲板候选。
+ * @param target 预测后的 tracker 目标。
+ * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
+ * @param armor_index 指定面索引。
+ * @param lock_id 输出新的锁定索引。
+ * @return 选中的瞄点。
+ */
+inline AimPoint ChooseArmorByIndex(
+    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
+    int armor_index, int& lock_id)
+{
+  if (armor_xyza_list.empty())
+  {
+    lock_id = -1;
+    return {};
+  }
+
+  const int selected_index =
+      ClampFaceIndex(armor_index, static_cast<int>(armor_xyza_list.size()));
+  lock_id = selected_index;
+  return BuildAimPoint(target, selected_index, armor_xyza_list[selected_index], true);
+}
+
+/**
  * @brief 选择水平距离最近的装甲板候选。
  * @param target 预测后的 tracker 目标。
  * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
  * @param lock_id 输入上一锁定索引，输出新的选中索引。
+ * @param shootable 该选择是否允许开火。
  * @return 选中的瞄点。
  */
 inline AimPoint ChooseNearestArmor(
     const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
-    int& lock_id)
+    int& lock_id, bool shootable)
 {
   int nearest_index = 0;
   double nearest_distance = std::numeric_limits<double>::max();
@@ -167,11 +214,118 @@ inline AimPoint ChooseNearestArmor(
   }
 
   lock_id = nearest_index;
-  return BuildAimPoint(target, nearest_index, armor_xyza_list[nearest_index], true);
+  return BuildAimPoint(target, nearest_index, armor_xyza_list[nearest_index],
+                       shootable);
 }
 
 /**
- * @brief 按水平距离最近原则选择瞄点。
+ * @brief 计算每个候选面相对相机方向的角度。
+ * @param target 预测后的 tracker 目标。
+ * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
+ * @return 每个候选面的相对视角，单位 rad。
+ */
+inline std::vector<double> BuildFaceViewAngles(
+    const PredictedTarget& target,
+    const std::vector<Eigen::Vector4d>& armor_xyza_list)
+{
+  std::vector<double> view_angles;
+  view_angles.reserve(armor_xyza_list.size());
+  for (const auto& armor_xyza : armor_xyza_list)
+  {
+    view_angles.emplace_back(ViewAngle(target.msg, armor_xyza));
+  }
+  return view_angles;
+}
+
+/**
+ * @brief 在正面可打窗口中按锁定滞回选择装甲板。
+ * @param target 预测后的 tracker 目标。
+ * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
+ * @param view_angles 候选面相对相机方向的角度。
+ * @param lock_id 输入上一锁定索引，输出新的锁定索引。
+ * @return 选中的瞄点；窗口内无候选时返回 invalid。
+ */
+inline AimPoint ChooseWindowLockedArmor(
+    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
+    const std::vector<double>& view_angles, int& lock_id)
+{
+  std::vector<int> candidates;
+  candidates.reserve(armor_xyza_list.size());
+  for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
+  {
+    if (std::abs(view_angles[index]) <= NORMAL_FACE_WINDOW_RAD)
+    {
+      candidates.push_back(index);
+    }
+  }
+
+  if (candidates.empty())
+  {
+    return {};
+  }
+
+  if (candidates.size() > 1)
+  {
+    const int first = candidates[0];
+    const int second = candidates[1];
+    if (lock_id != first && lock_id != second)
+    {
+      lock_id = (std::abs(view_angles[first]) < std::abs(view_angles[second]))
+                     ? first
+                     : second;
+    }
+    return BuildAimPoint(target, lock_id, armor_xyza_list[lock_id], true);
+  }
+
+  lock_id = -1;
+  const int selected_index = candidates[0];
+  return BuildAimPoint(target, selected_index, armor_xyza_list[selected_index], true);
+}
+
+/**
+ * @brief 对高速旋转或前哨站目标按进入/离开窗口选择装甲板。
+ * @param target 预测后的 tracker 目标。
+ * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
+ * @param view_angles 候选面相对相机方向的角度。
+ * @param lock_id 输入上一锁定索引，输出新的锁定索引。
+ * @return 选中的瞄点；当前锁定面不可打时 shootable 为 false。
+ */
+inline AimPoint ChooseDirectionalArmor(
+    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
+    const std::vector<double>& view_angles, int& lock_id)
+{
+  const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
+  const double approach_window =
+      is_outpost ? OUTPOST_APPROACH_WINDOW_RAD : NORMAL_APPROACH_WINDOW_RAD;
+  const double exit_window =
+      is_outpost ? OUTPOST_EXIT_WINDOW_RAD : NORMAL_EXIT_WINDOW_RAD;
+
+  for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
+  {
+    const double view_angle = view_angles[index];
+    if (std::abs(view_angle) > approach_window)
+    {
+      continue;
+    }
+
+    if ((target.msg.v_yaw > 0.0 && view_angle < exit_window) ||
+        (target.msg.v_yaw < 0.0 && view_angle > -exit_window))
+    {
+      lock_id = index;
+      return BuildAimPoint(target, index, armor_xyza_list[index], true);
+    }
+  }
+
+  if (lock_id >= 0 && lock_id < static_cast<int>(armor_xyza_list.size()))
+  {
+    return BuildAimPoint(target, lock_id, armor_xyza_list[lock_id], false);
+  }
+
+  return ChooseNearestArmor(target, armor_xyza_list, lock_id, false);
+}
+
+/**
+ * @brief 按 tracker 面状态和可打窗口选择瞄点。
  * @param target 预测后的 tracker 目标。
  * @param lock_id 输入上一锁定索引，输出新的选中索引。
  * @return 选中的瞄点；无可瞄目标时返回 invalid。
@@ -191,29 +345,40 @@ inline AimPoint ChooseAimPoint(const PredictedTarget& target, int& lock_id)
     return {};
   }
 
-  return ChooseNearestArmor(target, armor_xyza_list, lock_id);
+  if (!target.msg.face_switch_observed)
+  {
+    return ChooseArmorByIndex(target, armor_xyza_list, target.msg.tracked_face_index,
+                              lock_id);
+  }
+
+  const auto view_angles = BuildFaceViewAngles(target, armor_xyza_list);
+  const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
+  if (!is_outpost && std::abs(target.msg.radius_1) <= 2.0)
+  {
+    return ChooseWindowLockedArmor(target, armor_xyza_list, view_angles, lock_id);
+  }
+
+  return ChooseDirectionalArmor(target, armor_xyza_list, view_angles, lock_id);
 }
 
 /**
- * @brief 计算指向最近预测装甲板的 yaw、pitch 和飞行时间。
+ * @brief 计算指向策略选中装甲板的 yaw、pitch 和飞行时间。
  * @param cfg Aimer 运行时配置。
  * @param target 预测后的 tracker 目标。
  * @param bullet_speed 弹速，单位 m/s。
+ * @param lock_id 输入上一锁定索引，输出新的锁定索引。
  * @return 弹道解算成功时返回有效瞄准命令。
  */
-inline AimCommand ComputeNearestAimCommand(const AimerConfig& cfg,
-                                           const PredictedTarget& target,
-                                           double bullet_speed)
+inline AimCommand ComputeAimCommand(const AimerConfig& cfg,
+                                    const PredictedTarget& target,
+                                    double bullet_speed, int& lock_id)
 {
   AimCommand command;
-  const auto armor_xyza_list = target.GetArmorXYZAList();
-  if (armor_xyza_list.empty())
+  command.aim_point = ChooseAimPoint(target, lock_id);
+  if (!command.aim_point.valid)
   {
     return command;
   }
-
-  int nearest_lock_id = -1;
-  command.aim_point = ChooseNearestArmor(target, armor_xyza_list, nearest_lock_id);
 
   const Eigen::Vector3d xyz = command.aim_point.xyza.head<3>();
   const double horizontal_distance = HorizontalDistance(xyz);

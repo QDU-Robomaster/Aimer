@@ -34,6 +34,7 @@ using PlanTrajectory = Eigen::Matrix<double, 4, PLAN_HORIZON>;
  * @param target_msg 当前 tracker 目标。
  * @param delay_time 弹丸飞行前的固定预测延迟，单位 s。
  * @param bullet_speed 弹速，单位 m/s。
+ * @param initial_lock_id 参考轨迹的初始锁定面索引。
  * @param trajectory 输出参考轨迹。
  * @param yaw0 输出 yaw 偏置，用于让轨迹数值保持局部。
  * @return 所有参考采样都能计算时返回 true。
@@ -41,19 +42,24 @@ using PlanTrajectory = Eigen::Matrix<double, 4, PLAN_HORIZON>;
 inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
                                      const ArmorTrackerTarget& target_msg,
                                      double delay_time, double bullet_speed,
+                                     int initial_lock_id,
                                      PlanTrajectory& trajectory, double& yaw0)
 {
   PredictedTarget center_target{target_msg};
   center_target.Predict(delay_time);
+  int reference_lock_id =
+      target_msg.face_switch_observed ? initial_lock_id : target_msg.tracked_face_index;
 
-  const auto rough_aim = ComputeNearestAimCommand(cfg, center_target, bullet_speed);
+  const auto rough_aim =
+      ComputeAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
   if (!rough_aim.valid)
   {
     return false;
   }
 
   center_target.Predict(rough_aim.fly_time);
-  const auto center_aim = ComputeNearestAimCommand(cfg, center_target, bullet_speed);
+  const auto center_aim =
+      ComputeAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
   if (!center_aim.valid)
   {
     return false;
@@ -62,14 +68,16 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
 
   PredictedTarget moving_target = center_target;
   moving_target.Predict(-PLAN_DEFAULT_DT_S * (PLAN_HALF_HORIZON + 1));
-  auto yaw_pitch_last = ComputeNearestAimCommand(cfg, moving_target, bullet_speed);
+  auto yaw_pitch_last =
+      ComputeAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
   if (!yaw_pitch_last.valid)
   {
     return false;
   }
 
   moving_target.Predict(PLAN_DEFAULT_DT_S);
-  auto yaw_pitch = ComputeNearestAimCommand(cfg, moving_target, bullet_speed);
+  auto yaw_pitch =
+      ComputeAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
   if (!yaw_pitch.valid)
   {
     return false;
@@ -78,7 +86,8 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
   for (int index = 0; index < PLAN_HORIZON; ++index)
   {
     moving_target.Predict(PLAN_DEFAULT_DT_S);
-    auto yaw_pitch_next = ComputeNearestAimCommand(cfg, moving_target, bullet_speed);
+    auto yaw_pitch_next =
+        ComputeAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
     if (!yaw_pitch_next.valid)
     {
       return false;
@@ -189,7 +198,7 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   AimerDetail::PlanTrajectory reference{};
   double yaw0 = 0.0;
   if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg, delay_time,
-                                             bullet_speed, reference, yaw0))
+                                             bullet_speed, lock_id_, reference, yaw0))
   {
     return false;
   }
