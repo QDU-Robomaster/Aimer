@@ -63,7 +63,6 @@ template_args:
 required_hardware: []
 depends:
   - qdu-future/ArmorTracker
-  - qdu-future/CameraFrameSync
   - qdu-future/VisionPreview
 === END MANIFEST === */
 // clang-format on
@@ -75,7 +74,6 @@ depends:
 
 #include "ArmorTracker.hpp"
 #include "ArmorTrackerTarget.hpp"
-#include "CameraFrameSync.hpp"
 #include "GimbalPlan.hpp"
 #include "VisionPreview.hpp"
 #include "app_framework.hpp"
@@ -276,10 +274,10 @@ class AimerCore : public LibXR::Application
   using PreviewSink = void (*)(void*, const AimerPreviewFrame&);
 
   /**
-   * @brief 创建 Aimer 模块并注册 topic 回调。
+   * @brief 创建 Aimer 运行核心并注册裁判系统和云台反馈回调。
    */
   AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
-            Config cfg, bool subscribe_target_topic = true);
+            Config cfg);
 
   /**
    * @brief LibXR 应用要求的周期监控钩子。
@@ -297,10 +295,6 @@ class AimerCore : public LibXR::Application
   void TargetCallback(const ArmorTrackerTarget& target_msg);
 
  private:
-  /**
-   * @brief 注册轻量 tracker/target topic 回调。
-   */
-  void RegisterTargetCallback();
   /**
    * @brief 注册裁判系统与发射机构运行期日志回调。
    */
@@ -401,14 +395,13 @@ class AimerCore : public LibXR::Application
 #include "AimerPreview.hpp"
 
 /**
- * @brief Aimer 对外 xrobot 模块，内联持有与相机同步的实时预览。
+ * @brief Aimer 对外 xrobot 模块，消费 tracker 同源目标帧并内联持有实时预览。
  */
 template <CameraTypes::CameraInfo CameraInfoV>
 class Aimer : public AimerCore
 {
  public:
   using Config = AimerConfig;
-  using FrameSync = CameraFrameSync<CameraInfoV>;
   using TargetFramePacket = ArmorTrackerTargetFramePacket<CameraInfoV>;
   using TargetFrameMessage = ArmorTrackerTargetFrameMessage<CameraInfoV>;
   using SourceFrame = ArmorDetectionsSourceFrame<CameraInfoV>;
@@ -418,24 +411,14 @@ class Aimer : public AimerCore
   {
     if (cfg.preview.enabled)
     {
-      XR_LOG_WARN(
-          "Aimer preview is enabled but no tracker/target_frame image source was passed");
+      preview_.emplace(hw, app, AimerDetail::MakeAimerPreviewConfig(cfg));
+      SetPreviewSink(
+          [](void* context, const AimerPreviewFrame& frame)
+          {
+            static_cast<Aimer*>(context)->SubmitPreviewFrame(frame);
+          },
+          this);
     }
-  }
-
-  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg,
-        FrameSync& sync)
-      : AimerCore(hw, app, cfg, false),
-        preview_(std::in_place, hw, app,
-                 AimerDetail::MakeAimerPreviewConfig(cfg))
-  {
-    (void)sync;
-    SetPreviewSink(
-        [](void* context, const AimerPreviewFrame& frame)
-        {
-          static_cast<Aimer*>(context)->SubmitPreviewFrame(frame);
-        },
-        this);
     RegisterTargetFrameCallback();
   }
 

@@ -13,18 +13,14 @@
 #include "AimerPlanner.hpp"
 
 /**
- * @brief 构造 Aimer 并注册 tracker、referee、gimbal 输入 topic 回调。
+ * @brief 构造 Aimer 运行核心并注册 referee、gimbal 输入 topic 回调。
  */
 inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
-                    Config cfg, bool subscribe_target_topic)
+                            Config cfg)
     : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
 {
   SetupGimbalPlanSolvers();
   RegisterRuntimeLogCallbacks();
-  if (subscribe_target_topic)
-  {
-    RegisterTargetCallback();
-  }
 
   LibXR::Topic::Domain gimbal_domain("gimbal");
   LibXR::Topic gimbal_rotation_topic =
@@ -53,27 +49,6 @@ inline void AimerCore::SetPreviewSink(PreviewSink sink, void* context)
 {
   preview_sink_ = sink;
   preview_context_ = context;
-}
-
-/**
- * @brief 注册轻量 tracker/target 回调。
- */
-inline void AimerCore::RegisterTargetCallback()
-{
-  LibXR::Topic::Domain tracker_domain("tracker");
-  LibXR::Topic target_topic =
-      LibXR::Topic::FindOrCreate<ArmorTrackerTarget>("target", &tracker_domain);
-  auto target_callback = LibXR::Topic::Callback::Create(
-      [](bool, AimerCore* self, LibXR::RawData& data)
-      {
-        auto* target_msg = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
-        if (target_msg != nullptr && data.size_ == sizeof(ArmorTrackerTarget))
-        {
-          self->TargetCallback(*target_msg);
-        }
-      },
-      this);
-  target_topic.RegisterCallback(target_callback);
 }
 
 /**
