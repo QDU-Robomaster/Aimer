@@ -45,10 +45,6 @@ constructor_args:
     heat_log_delta: 1.0
     referee_domain: "host"
     referee_topic: "robot_game_ref"
-    launcher_heat_topic: "launcher_ref"
-    webots_launcher_domain: "webots_launcher"
-    webots_launcher_state_topic: "state"
-    webots_launcher_shot_event_topic: "shot_event"
 template_args: []
 required_hardware: []
 depends:
@@ -109,7 +105,7 @@ struct [[gnu::packed]] AimerRefereeLauncherData
 };
 
 /**
- * @brief host/robot_game_ref 的轻量裁判系统摘要。
+ * @brief host/robot_game_ref 的完整 31 字节裁判系统摘要载荷。
  */
 struct [[gnu::packed]] AimerRefereeSummary
 {
@@ -118,65 +114,10 @@ struct [[gnu::packed]] AimerRefereeSummary
   AimerRefereeLauncherData launcher_data{};
 };
 
-/**
- * @brief launcher_ref 的发射机构热量反馈。
- */
-struct [[gnu::packed]] AimerLauncherHeatFeedback
-{
-  AimerRefereeRobotStatus robot_status{};
-  uint16_t launcher_id1_17_heat{};
-};
-
-/**
- * @brief Webots 发射机构状态快照。
- */
-struct AimerWebotsLauncherState
-{
-  uint64_t update_time_us{0};
-  uint64_t last_request_time_us{0};
-  uint64_t last_fire_time_us{0};
-  uint64_t next_fire_request_us{0};
-  uint64_t pending_fire_time_us{0};
-  uint64_t shot_count{0};
-  float current_heat{0.0F};
-  float heat_limit{0.0F};
-  float cooling_rate{0.0F};
-  float single_shot_heat{0.0F};
-  float bullet_speed{0.0F};
-  float max_fire_frequency_hz{0.0F};
-  float fire_delay_s{0.0F};
-  float min_fire_interval_s{0.0F};
-  float current_fire_frequency_hz{0.0F};
-  uint8_t launcher_enabled{1};
-  uint8_t can_fire{0};
-  uint8_t pending_fire{0};
-  uint8_t last_reject_reason{0};
-};
-
-/**
- * @brief Webots 发射机构实际出弹事件。
- */
-struct AimerWebotsLauncherShotEvent
-{
-  uint64_t shot_id{0};
-  uint64_t request_time_us{0};
-  uint64_t fire_time_us{0};
-  uint64_t shot_interval_us{0};
-  float bullet_speed{0.0F};
-  float heat_before{0.0F};
-  float heat_after{0.0F};
-  float heat_limit{0.0F};
-  float cooling_rate{0.0F};
-  float single_shot_heat{0.0F};
-  float fire_delay_s{0.0F};
-  float min_fire_interval_s{0.0F};
-};
-
 static_assert(sizeof(AimerRefereeRobotStatus) == 13);
 static_assert(sizeof(AimerRefereeGameStatus) == 11);
 static_assert(sizeof(AimerRefereeLauncherData) == 7);
 static_assert(sizeof(AimerRefereeSummary) == 31);
-static_assert(sizeof(AimerLauncherHeatFeedback) == 15);
 
 /**
  * @brief 发布到 tracker/send 的云台命令载荷。
@@ -280,14 +221,6 @@ class Aimer : public LibXR::Application
     const char* referee_domain{"host"};
     /// 裁判系统摘要 topic 名。
     const char* referee_topic{"robot_game_ref"};
-    /// 发射机构热量反馈 topic 名；空字符串表示不订阅。
-    const char* launcher_heat_topic{"launcher_ref"};
-    /// Webots 发射机构 topic 域。
-    const char* webots_launcher_domain{"webots_launcher"};
-    /// Webots 发射机构状态 topic 名；空字符串表示不订阅。
-    const char* webots_launcher_state_topic{"state"};
-    /// Webots 实际出弹事件 topic 名；空字符串表示不订阅。
-    const char* webots_launcher_shot_event_topic{"shot_event"};
   };
 
   /**
@@ -302,10 +235,6 @@ class Aimer : public LibXR::Application
 
  private:
   /**
-   * @brief 根据裁判系统 topic 更新最新弹速。
-   */
-  void BulletSpeedCallback(float bullet_speed_msg);
-  /**
    * @brief 注册裁判系统与发射机构运行期日志回调。
    */
   void RegisterRuntimeLogCallbacks();
@@ -317,18 +246,6 @@ class Aimer : public LibXR::Application
    * @brief 处理裁判系统摘要反馈。
    */
   void RefereeSummaryCallback(const AimerRefereeSummary& summary);
-  /**
-   * @brief 处理真实发射机构热量反馈。
-   */
-  void LauncherHeatCallback(const AimerLauncherHeatFeedback& heat_msg);
-  /**
-   * @brief 处理 Webots 发射机构状态反馈。
-   */
-  void WebotsLauncherStateCallback(const AimerWebotsLauncherState& state);
-  /**
-   * @brief 处理 Webots 实际出弹事件。
-   */
-  void WebotsLauncherShotCallback(const AimerWebotsLauncherShotEvent& event);
   /**
    * @brief 按变化量记录热量、热量上限和冷却值。
    */
@@ -399,7 +316,6 @@ class Aimer : public LibXR::Application
   double last_logged_heat_{0.0};
   double last_logged_heat_limit_{0.0};
   double last_logged_cooling_{0.0};
-  uint64_t last_logged_webots_shot_id_{0};
   TinySolver* yaw_solver_{nullptr};
   TinySolver* pitch_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};

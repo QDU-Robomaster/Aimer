@@ -34,18 +34,6 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
       this);
   target_topic.RegisterCallback(target_callback);
 
-  LibXR::Topic::Domain referee_domain("referee");
-  LibXR::Topic bullet_speed_topic =
-      LibXR::Topic::FindOrCreate<float>("bullet_speed", &referee_domain);
-  auto bullet_speed_callback = LibXR::Topic::Callback::Create(
-      [](bool, Aimer* self, LibXR::RawData& data)
-      {
-        auto* bullet_speed_msg = reinterpret_cast<float*>(data.addr_);
-        self->BulletSpeedCallback(*bullet_speed_msg);
-      },
-      this);
-  bullet_speed_topic.RegisterCallback(bullet_speed_callback);
-
   LibXR::Topic::Domain gimbal_domain("gimbal");
   LibXR::Topic gimbal_rotation_topic =
       LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation", &gimbal_domain);
@@ -63,14 +51,14 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
 }
 
 /**
- * @brief 注册裁判系统与发射机构运行期日志回调。
+ * @brief 注册裁判系统运行期回调。
  */
 inline void Aimer::RegisterRuntimeLogCallbacks()
 {
   const char* referee_domain_name =
       (cfg_.referee_domain != nullptr && cfg_.referee_domain[0] != '\0')
           ? cfg_.referee_domain
-          : "referee";
+          : "host";
   LibXR::Topic::Domain referee_domain(referee_domain_name);
 
   if (cfg_.referee_topic != nullptr && cfg_.referee_topic[0] != '\0')
@@ -87,70 +75,6 @@ inline void Aimer::RegisterRuntimeLogCallbacks()
         this);
     referee_topic.RegisterCallback(referee_callback);
   }
-
-  if (cfg_.launcher_heat_topic != nullptr && cfg_.launcher_heat_topic[0] != '\0')
-  {
-    LibXR::Topic launcher_heat_topic =
-        LibXR::Topic::FindOrCreate<AimerLauncherHeatFeedback>(
-            cfg_.launcher_heat_topic, &referee_domain);
-    auto launcher_heat_callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, LibXR::RawData& data)
-        {
-          auto* heat_msg =
-              reinterpret_cast<AimerLauncherHeatFeedback*>(data.addr_);
-          self->LauncherHeatCallback(*heat_msg);
-        },
-        this);
-    launcher_heat_topic.RegisterCallback(launcher_heat_callback);
-  }
-
-  const char* webots_launcher_domain_name =
-      (cfg_.webots_launcher_domain != nullptr &&
-       cfg_.webots_launcher_domain[0] != '\0')
-          ? cfg_.webots_launcher_domain
-          : "webots_launcher";
-  LibXR::Topic::Domain webots_launcher_domain(webots_launcher_domain_name);
-
-  if (cfg_.webots_launcher_state_topic != nullptr &&
-      cfg_.webots_launcher_state_topic[0] != '\0')
-  {
-    LibXR::Topic webots_state_topic =
-        LibXR::Topic::FindOrCreate<AimerWebotsLauncherState>(
-            cfg_.webots_launcher_state_topic, &webots_launcher_domain);
-    auto webots_state_callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, LibXR::RawData& data)
-        {
-          auto* state = reinterpret_cast<AimerWebotsLauncherState*>(data.addr_);
-          self->WebotsLauncherStateCallback(*state);
-        },
-        this);
-    webots_state_topic.RegisterCallback(webots_state_callback);
-  }
-
-  if (cfg_.webots_launcher_shot_event_topic != nullptr &&
-      cfg_.webots_launcher_shot_event_topic[0] != '\0')
-  {
-    LibXR::Topic webots_shot_topic =
-        LibXR::Topic::FindOrCreate<AimerWebotsLauncherShotEvent>(
-            cfg_.webots_launcher_shot_event_topic, &webots_launcher_domain);
-    auto webots_shot_callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, LibXR::RawData& data)
-        {
-          auto* event = reinterpret_cast<AimerWebotsLauncherShotEvent*>(data.addr_);
-          self->WebotsLauncherShotCallback(*event);
-        },
-        this);
-    webots_shot_topic.RegisterCallback(webots_shot_callback);
-  }
-}
-
-/**
- * @brief 根据裁判系统弹速消息更新内部弹速缓存。
- * @param bullet_speed_msg 最新弹速，单位 m/s。
- */
-inline void Aimer::BulletSpeedCallback(float bullet_speed_msg)
-{
-  UpdateBulletSpeed(bullet_speed_msg, "referee/bullet_speed");
 }
 
 /**
@@ -199,60 +123,6 @@ inline void Aimer::RefereeSummaryCallback(const AimerRefereeSummary& summary)
                 static_cast<double>(summary.robot_status.shooter_heat_limit),
                 static_cast<double>(summary.robot_status.shooter_cooling_value),
                 "host/robot_game_ref", false);
-}
-
-/**
- * @brief 处理真实发射机构热量反馈。
- */
-inline void Aimer::LauncherHeatCallback(const AimerLauncherHeatFeedback& heat_msg)
-{
-  LogHeatStatus(static_cast<double>(heat_msg.launcher_id1_17_heat),
-                static_cast<double>(heat_msg.robot_status.shooter_heat_limit),
-                static_cast<double>(heat_msg.robot_status.shooter_cooling_value),
-                "launcher_ref", false);
-}
-
-/**
- * @brief 处理 Webots 发射机构状态反馈。
- */
-inline void Aimer::WebotsLauncherStateCallback(const AimerWebotsLauncherState& state)
-{
-  LogHeatStatus(static_cast<double>(state.current_heat),
-                static_cast<double>(state.heat_limit),
-                static_cast<double>(state.cooling_rate),
-                "webots_launcher/state", false);
-  UpdateBulletSpeed(state.bullet_speed, "webots_launcher/state");
-}
-
-/**
- * @brief 处理 Webots 实际出弹事件。
- */
-inline void Aimer::WebotsLauncherShotCallback(const AimerWebotsLauncherShotEvent& event)
-{
-  if (!cfg_.enable_runtime_log)
-  {
-    return;
-  }
-
-  LibXR::Mutex::LockGuard lock(runtime_log_lock_);
-  if (event.shot_id == last_logged_webots_shot_id_)
-  {
-    return;
-  }
-
-  XR_LOG_INFO(
-      "Aimer shot source=webots shot=%llu heat=%.1f->%.1f limit=%.1f cooling=%.1f delay=%.3f s interval=%.3f s bullet=%.2f m/s",
-      static_cast<unsigned long long>(event.shot_id), event.heat_before,
-      event.heat_after, event.heat_limit, event.cooling_rate,
-      event.fire_delay_s, event.min_fire_interval_s, event.bullet_speed);
-  last_logged_webots_shot_id_ = event.shot_id;
-  last_logged_heat_ = event.heat_after;
-  last_logged_heat_limit_ = event.heat_limit;
-  last_logged_cooling_ = event.cooling_rate;
-  have_logged_heat_status_ = true;
-  last_logged_bullet_speed_ = event.bullet_speed;
-  have_logged_bullet_speed_ = true;
-  bullet_speed_.store(event.bullet_speed, std::memory_order_relaxed);
 }
 
 /**

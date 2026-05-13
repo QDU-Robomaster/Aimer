@@ -7,9 +7,7 @@
 ## 数据流
 
 - 输入 `tracker/target`：`ArmorTracker` 发布的 `ArmorTrackerTarget`。
-- 输入 `referee/bullet_speed`：裁判系统或上游估计的当前弹速，异常或过低时回退到默认弹速。
-- 输入 `host/robot_game_ref`：可选裁判摘要，用于更新反馈弹速并记录热量上限和冷却值。
-- 输入 `launcher_ref` / `webots_launcher/*`：可选发射机构反馈，只用于 info 级统计日志。
+- 输入 `host/robot_game_ref`：完整裁判摘要，载荷为 Aimer 本地定义的 31 字节 `AimerRefereeSummary`，用于更新反馈弹速并记录热量上限和冷却值；异常或过低时回退到默认弹速。
 - 输入 `gimbal/rotation`：云台当前姿态，只用于自动开火判定。
 - 输出 `tracker/gimbal_plan`：TinyMPC 云台计划，包含目标角、计划角、角速度和角加速度。
 - 输出 `tracker/fire_notify`：开火通知，由 `tracker/send.is_fire` 派生。
@@ -35,7 +33,7 @@ Aimer 的 yaw、半径展开、水平距离和弹道解算都以 `x-z` 为水平
 - 第一次弹道飞行时间用于继续预测目标，最终瞄点是命中时刻的最近装甲板。
 - `gimbal_plan` 使用 yaw/pitch 双积分 TinyMPC，默认 `HORIZON=100`、`dt=0.01`、`HALF_HORIZON=50`、`max_yaw_acc=100`、`max_pitch_acc=100`。
 - `is_fire` 需要命令稳定、云台对齐且目标可打；没有 `gimbal/rotation` 时不会自动开火。
-- 运行期 info 日志只记录统计事件：反馈弹速变化、开火状态翻转、热量/冷却配置变化和实际出弹热量事件。
+- 运行期 info 日志只记录统计事件：`host/robot_game_ref` 反馈弹速变化、开火状态翻转以及热量/冷却配置变化。
 
 ## 预览
 
