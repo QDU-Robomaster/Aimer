@@ -23,12 +23,8 @@ constructor_args:
     fire_delay_s: 0.0
     low_speed_extra_predict_s: 0.015
     high_speed_extra_predict_s: 0.03
-    armor_width_m: 0.135
-    armor_height_m: 0.055
-    bullet_spread_m: 0.015
     min_fire_threshold: 0.003
     max_fire_threshold: 0.05
-    enable_pitch_fire_gate: false
     enable_mpc_plan: true
     mpc_fire_thresh: 0.05
     max_yaw_acc: 100.0
@@ -39,7 +35,6 @@ constructor_args:
     q_pitch_pos: 50.0
     q_pitch_vel: 1.0
     r_pitch_acc: 1.0
-    mpc_max_iter: 10
     preview:
       enabled: false
       preview_window_name: "aimer_preview"
@@ -51,8 +46,6 @@ constructor_args:
       web_port: 8080
       web_stream_name: "aimer_preview"
       max_fps: 30.0
-    preview_armor_pitch_deg: 15.0
-    preview_sync_wait_ms: 20
     enable_runtime_log: true
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
@@ -199,18 +192,10 @@ struct AimerConfig
     double low_speed_extra_predict_s{0.015};
     /// yaw 角速度超过阈值时的额外预测延迟。
     double high_speed_extra_predict_s{0.03};
-    /// 动态开火阈值使用的装甲板宽度，单位 m。
-    double armor_width_m{0.135};
-    /// 动态开火阈值使用的装甲板高度，单位 m。
-    double armor_height_m{0.055};
-    /// 弹道散布裕量，单位 m。
-    double bullet_spread_m{0.015};
     /// 最小角度开火阈值，单位 rad。
     double min_fire_threshold{0.003};
     /// 最大角度开火阈值，单位 rad。
     double max_fire_threshold{0.05};
-    /// 是否把 pitch 对准纳入自动开火门控。
-    bool enable_pitch_fire_gate{false};
     /// 是否启用 TinyMPC 云台计划。
     bool enable_mpc_plan{true};
     /// 允许开火的最大 MPC 跟踪误差，单位 rad。
@@ -231,14 +216,8 @@ struct AimerConfig
     double q_pitch_vel{1.0};
     /// TinyMPC pitch 加速度代价。
     double r_pitch_acc{1.0};
-    /// TinyMPC ADMM 最大迭代次数。
-    int mpc_max_iter{10};
     /// Aimer 内置实时预览运行参数。
     VisionPreview::RuntimeParam preview{};
-    /// Aimer 预览绘制装甲板固定安装倾角，单位 deg。
-    double preview_armor_pitch_deg{15.0};
-    /// Aimer 预览等待匹配输出的最大时间，单位 ms。
-    uint32_t preview_sync_wait_ms{20};
     /// 是否输出运行期统计日志。
     bool enable_runtime_log{true};
     /// 弹速变化超过该阈值时打印反馈日志，单位 m/s。
@@ -305,8 +284,7 @@ class AimerCore : public LibXR::Application
    * @brief 根据命令稳定性和云台对准情况评估自动开火门控。
    */
   bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double selected_view_angle,
-                      bool shootable, double yaw,
-                      double pitch);
+                      bool shootable, double yaw);
   /**
    * @brief 初始化 yaw 和 pitch TinyMPC 求解器。
    */
@@ -340,7 +318,6 @@ class AimerCore : public LibXR::Application
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
   bool has_last_command_{false};
   double last_command_yaw_{0.0};
-  double last_command_pitch_{0.0};
   bool has_gimbal_rotation_{false};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};

@@ -145,7 +145,7 @@ inline void AimerCore::SetupGimbalPlanSolvers()
       return false;
     }
 
-    (*solver)->settings->max_iter = cfg_.mpc_max_iter;
+    (*solver)->settings->max_iter = AimerDetail::MPC_MAX_ITER;
     return true;
   };
 

@@ -246,15 +246,14 @@ inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_ro
  */
 inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
                                   double selected_view_angle, bool shootable,
-                                  double yaw, double pitch)
+                                  double yaw)
 {
   const auto [yaw_threshold, pitch_threshold] =
       AimerDetail::DynamicFireThreshold(cfg_, target_xyz, selected_view_angle);
 
-  auto remember_command = [this, yaw, pitch]()
+  auto remember_command = [this, yaw]()
   {
     last_command_yaw_ = yaw;
-    last_command_pitch_ = pitch;
     has_last_command_ = true;
   };
 
@@ -279,7 +278,6 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
 
   const auto gimbal_euler = gimbal_rotation.ToEulerAngleZYX();
   const double gimbal_yaw = gimbal_euler[2];
-  const double gimbal_pitch = gimbal_euler[1];
 
   if (!has_last_command_)
   {
@@ -289,18 +287,10 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
 
   const double command_error_yaw =
       std::abs(AimerDetail::LimitRad(last_command_yaw_ - yaw));
-  const double command_error_pitch =
-      std::abs(AimerDetail::LimitRad(last_command_pitch_ - pitch));
   const double gimbal_error_yaw = std::abs(AimerDetail::LimitRad(gimbal_yaw - yaw));
-  const double gimbal_error_pitch =
-      std::abs(AimerDetail::LimitRad(gimbal_pitch - pitch));
 
-  const bool command_stable =
-      command_error_yaw < yaw_threshold * 2.0 &&
-      (!cfg_.enable_pitch_fire_gate || command_error_pitch < pitch_threshold * 2.0);
-  const bool gimbal_aligned =
-      gimbal_error_yaw < yaw_threshold &&
-      (!cfg_.enable_pitch_fire_gate || gimbal_error_pitch < pitch_threshold);
+  const bool command_stable = command_error_yaw < yaw_threshold * 2.0;
+  const bool gimbal_aligned = gimbal_error_yaw < yaw_threshold;
 
   remember_command();
   return command_stable && gimbal_aligned;
@@ -398,7 +388,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   const double pitch = -(trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD);
 
   send_msg_.is_fire =
-      ShouldAutoFire(final_xyz, aim_point.view_angle, aim_point.shootable, yaw, pitch);
+      ShouldAutoFire(final_xyz, aim_point.view_angle, aim_point.shootable, yaw);
   send_msg_.position.x() = final_xyz.x();
   send_msg_.position.y() = final_xyz.y();
   send_msg_.position.z() = final_xyz.z();

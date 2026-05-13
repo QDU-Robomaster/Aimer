@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 
 #include <Eigen/Dense>
@@ -21,6 +22,18 @@ inline constexpr double DEG2RAD = PI / 180.0;
 inline constexpr double GRAVITY = 9.7833;
 /// 避免弹道方程奇异的最小水平距离。
 inline constexpr double MIN_HORIZONTAL_DISTANCE_M = 1e-4;
+/// RoboMaster 小装甲板规则宽度，单位 m。
+inline constexpr double SMALL_ARMOR_WIDTH_M = 0.135;
+/// RoboMaster 装甲板规则高度，单位 m。
+inline constexpr double ARMOR_HEIGHT_M = 0.056;
+/// 自动开火角阈值预留的弹道散布裕量，单位 m。
+inline constexpr double FIRE_BULLET_SPREAD_M = 0.015;
+/// RoboMaster 装甲板固定安装俯仰角，单位 deg。
+inline constexpr double ARMOR_PITCH_DEG = 15.0;
+/// Aimer preview 等待匹配输出的最大时间，单位 ms。
+inline constexpr uint32_t PREVIEW_SYNC_WAIT_MS = 20;
+/// TinyMPC ADMM 最大迭代次数。
+inline constexpr int MPC_MAX_ITER = 10;
 
 /**
  * @brief 将角度限制到 [-pi, pi] 区间。
@@ -106,10 +119,10 @@ inline std::pair<double, double> DynamicFireThreshold(
   const double facing_scale =
       std::clamp(std::cos(std::abs(selected_view_angle)), 0.25, 1.0);
   const double yaw_half =
-      std::atan2(0.5 * cfg.armor_width_m * facing_scale, horizontal_distance);
-  const double pitch_half = std::atan2(0.5 * cfg.armor_height_m, distance);
-  const double spread_yaw = std::atan2(cfg.bullet_spread_m, horizontal_distance);
-  const double spread_pitch = std::atan2(cfg.bullet_spread_m, distance);
+      std::atan2(0.5 * SMALL_ARMOR_WIDTH_M * facing_scale, horizontal_distance);
+  const double pitch_half = std::atan2(0.5 * ARMOR_HEIGHT_M, distance);
+  const double spread_yaw = std::atan2(FIRE_BULLET_SPREAD_M, horizontal_distance);
+  const double spread_pitch = std::atan2(FIRE_BULLET_SPREAD_M, distance);
   const double yaw_threshold =
       std::clamp(yaw_half - spread_yaw, cfg.min_fire_threshold,
                  cfg.max_fire_threshold);

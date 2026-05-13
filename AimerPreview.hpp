@@ -34,14 +34,8 @@ struct AimerPreviewConfig
 {
   /// 预览子系统运行参数。
   VisionPreview::RuntimeParam preview{};
-  /// 预览中装甲板宽度，单位 m。
-  double armor_width_m{0.135};
-  /// 预览中装甲板高度，单位 m。
-  double armor_height_m{0.055};
-  /// 预览中装甲板固定安装倾角，单位 deg。
-  double armor_pitch_deg{15.0};
   /// 等待匹配 Aimer 输出的最大时间，单位 ms。
-  uint32_t sync_wait_ms{20};
+  uint32_t sync_wait_ms{AimerDetail::PREVIEW_SYNC_WAIT_MS};
 };
 
 namespace AimerDetail
@@ -53,10 +47,6 @@ inline AimerPreviewConfig MakeAimerPreviewConfig(const AimerConfig& cfg)
 {
   AimerPreviewConfig preview_cfg{};
   preview_cfg.preview = cfg.preview;
-  preview_cfg.armor_width_m = cfg.armor_width_m;
-  preview_cfg.armor_height_m = cfg.armor_height_m;
-  preview_cfg.armor_pitch_deg = cfg.preview_armor_pitch_deg;
-  preview_cfg.sync_wait_ms = cfg.preview_sync_wait_ms;
   return preview_cfg;
 }
 }  // namespace AimerDetail
@@ -343,15 +333,16 @@ class AimerPreview : public LibXR::Application
     const Eigen::Vector3d center = OutputFrameToWorld(xyza.head<3>());
     const double yaw = OutputYawToWorld(xyza[3]);
     const Eigen::Vector3d width_dir(-std::sin(yaw), std::cos(yaw), 0.0);
-    const double pitch = cfg_.armor_pitch_deg * AimerDetail::DEG2RAD;
+    const double pitch = AimerDetail::ARMOR_PITCH_DEG * AimerDetail::DEG2RAD;
     const double pitch_sign =
         target.id == ArmorNumber::OUTPOST ? -1.0 : 1.0;
     const Eigen::Vector3d height_dir =
         Eigen::Vector3d(std::cos(yaw) * pitch_sign * std::sin(pitch),
                         std::sin(yaw) * pitch_sign * std::sin(pitch),
                         std::cos(pitch));
-    const Eigen::Vector3d half_w = 0.5 * cfg_.armor_width_m * width_dir;
-    const Eigen::Vector3d half_h = 0.5 * cfg_.armor_height_m * height_dir;
+    const Eigen::Vector3d half_w =
+        0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * width_dir;
+    const Eigen::Vector3d half_h = 0.5 * AimerDetail::ARMOR_HEIGHT_M * height_dir;
     return {center - half_w + half_h, center + half_w + half_h,
             center + half_w - half_h, center - half_w - half_h};
   }
