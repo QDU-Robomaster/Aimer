@@ -40,25 +40,53 @@ constructor_args:
     q_pitch_vel: 1.0
     r_pitch_acc: 1.0
     mpc_max_iter: 10
+    preview:
+      enabled: false
+      preview_window_name: "aimer_preview"
+      preview_scale: 0.5
+      preview_wait_key_ms: 1
+      queue_capacity: 1
+      output_mode: "window"
+      web_bind_address: "0.0.0.0"
+      web_port: 8080
+      web_stream_name: "aimer_preview"
+      max_fps: 30.0
+    preview_armor_pitch_deg: 15.0
+    preview_sync_wait_ms: 20
     enable_runtime_log: true
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
     referee_domain: "host"
     referee_topic: "robot_game_ref"
-template_args: []
+template_args:
+  - Info:
+      width: 1280
+      height: 720
+      step: 3840
+      encoding: CameraTypes::Encoding::BGR8
+      camera_matrix: [800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0]
+      distortion_model: CameraTypes::DistortionModel::PLUMB_BOB
+      distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+      rectification_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+      projection_matrix: [800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 required_hardware: []
 depends:
   - qdu-future/ArmorTracker
+  - qdu-future/CameraFrameSync
+  - qdu-future/VisionPreview
 === END MANIFEST === */
 // clang-format on
 
 #include <Eigen/Dense>
 #include <atomic>
 #include <cstdint>
+#include <optional>
 
 #include "ArmorTracker.hpp"
 #include "ArmorTrackerTarget.hpp"
+#include "CameraFrameSync.hpp"
 #include "GimbalPlan.hpp"
+#include "VisionPreview.hpp"
 #include "app_framework.hpp"
 #include "libxr.hpp"
 #include "logger.hpp"
@@ -141,16 +169,10 @@ struct AimerSend
 };
 
 /**
- * @brief 选择目标装甲板、解算弹道 yaw/pitch，并发布云台命令。
+ * @brief 由 xrobot YAML 生成的 Aimer 运行时配置。
  */
-class Aimer : public LibXR::Application
+struct AimerConfig
 {
- public:
-  /**
-   * @brief 由 xrobot YAML 生成的运行时配置。
-   */
-  struct Config
-  {
     /// 施加到弹道命令上的固定 yaw 偏置，单位 deg。
     double yaw_offset{-1.0};
     /// 施加到弹道命令上的固定 pitch 偏置，单位 deg。
@@ -211,6 +233,12 @@ class Aimer : public LibXR::Application
     double r_pitch_acc{1.0};
     /// TinyMPC ADMM 最大迭代次数。
     int mpc_max_iter{10};
+    /// Aimer 内置实时预览运行参数。
+    VisionPreview::RuntimeParam preview{};
+    /// Aimer 预览绘制装甲板固定安装倾角，单位 deg。
+    double preview_armor_pitch_deg{15.0};
+    /// Aimer 预览等待匹配输出的最大时间，单位 ms。
+    uint32_t preview_sync_wait_ms{20};
     /// 是否输出运行期统计日志。
     bool enable_runtime_log{true};
     /// 弹速变化超过该阈值时打印反馈日志，单位 m/s。
@@ -221,12 +249,21 @@ class Aimer : public LibXR::Application
     const char* referee_domain{"host"};
     /// 裁判系统摘要 topic 名。
     const char* referee_topic{"robot_game_ref"};
-  };
+};
+
+/**
+ * @brief 选择目标装甲板、解算弹道 yaw/pitch，并发布云台命令。
+ */
+class AimerCore : public LibXR::Application
+{
+ public:
+  using Config = AimerConfig;
 
   /**
    * @brief 创建 Aimer 模块并注册 topic 回调。
    */
-  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg);
+  AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
+            Config cfg);
 
   /**
    * @brief LibXR 应用要求的周期监控钩子。
@@ -334,3 +371,35 @@ class Aimer : public LibXR::Application
 };
 
 #include "AimerImpl.hpp"
+#include "AimerPreview.hpp"
+
+/**
+ * @brief Aimer 对外 xrobot 模块，内联持有与相机同步的实时预览。
+ */
+template <CameraTypes::CameraInfo CameraInfoV>
+class Aimer : public AimerCore
+{
+ public:
+  using Config = AimerConfig;
+  using FrameSync = CameraFrameSync<CameraInfoV>;
+
+  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg)
+      : AimerCore(hw, app, cfg)
+  {
+    if (cfg.preview.enabled)
+    {
+      XR_LOG_WARN("Aimer preview is enabled but no CameraFrameSync was passed");
+    }
+  }
+
+  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg,
+        FrameSync& sync)
+      : AimerCore(hw, app, cfg),
+        preview_(std::in_place, hw, app,
+                 AimerDetail::MakeAimerPreviewConfig(cfg), sync)
+  {
+  }
+
+ private:
+  std::optional<AimerPreview<CameraInfoV>> preview_;
+};

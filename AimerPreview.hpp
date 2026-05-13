@@ -2,47 +2,8 @@
 
 /**
  * @file AimerPreview.hpp
- * @brief Aimer 的独立实时预览模块。
+ * @brief Aimer 内部实时预览实现。
  */
-
-// clang-format off
-/* === MODULE MANIFEST V2 ===
-module_description: Aimer realtime preview for tracker target and final aim point
-constructor_args:
-  cfg:
-    preview:
-      enabled: false
-      preview_window_name: "aimer_preview"
-      preview_scale: 0.5
-      preview_wait_key_ms: 1
-      queue_capacity: 1
-      output_mode: "window"
-      web_bind_address: "0.0.0.0"
-      web_port: 8080
-      web_stream_name: "aimer_preview"
-      max_fps: 30.0
-    armor_width_m: 0.135
-    armor_height_m: 0.055
-    armor_pitch_deg: 15.0
-    sync_wait_ms: 20
-template_args:
-  - Info:
-      width: 1280
-      height: 720
-      step: 3840
-      encoding: CameraTypes::Encoding::BGR8
-      camera_matrix: [800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0]
-      distortion_model: CameraTypes::DistortionModel::PLUMB_BOB
-      distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
-      rectification_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-      projection_matrix: [800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-required_hardware: []
-depends:
-  - qdu-future/ArmorTracker
-  - qdu-future/CameraFrameSync
-  - qdu-future/VisionPreview
-=== END MANIFEST === */
-// clang-format on
 
 #include <algorithm>
 #include <array>
@@ -61,9 +22,9 @@ depends:
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "Aimer.hpp"
 #include "AimerTargetModel.hpp"
 #include "CameraFrameSync.hpp"
+#include "GimbalPlan.hpp"
 #include "VisionPreview.hpp"
 
 /**
@@ -82,6 +43,23 @@ struct AimerPreviewConfig
   /// 等待匹配 Aimer 输出的最大时间，单位 ms。
   uint32_t sync_wait_ms{20};
 };
+
+namespace AimerDetail
+{
+/**
+ * @brief 从 Aimer 主配置中提取内部预览配置。
+ */
+inline AimerPreviewConfig MakeAimerPreviewConfig(const AimerConfig& cfg)
+{
+  AimerPreviewConfig preview_cfg{};
+  preview_cfg.preview = cfg.preview;
+  preview_cfg.armor_width_m = cfg.armor_width_m;
+  preview_cfg.armor_height_m = cfg.armor_height_m;
+  preview_cfg.armor_pitch_deg = cfg.preview_armor_pitch_deg;
+  preview_cfg.sync_wait_ms = cfg.preview_sync_wait_ms;
+  return preview_cfg;
+}
+}  // namespace AimerDetail
 
 /**
  * @brief Aimer 预览：从相机同步帧和 tracker/Aimer topic 绘制实时结果。

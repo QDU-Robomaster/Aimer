@@ -97,7 +97,7 @@ struct TrajectorySolution
  * @return yaw 和 pitch 阈值，单位 rad。
  */
 inline std::pair<double, double> DynamicFireThreshold(
-    const Aimer::Config& cfg, const Eigen::Vector3d& target_xyz,
+    const AimerConfig& cfg, const Eigen::Vector3d& target_xyz,
     double selected_view_angle)
 {
   const double horizontal_distance =

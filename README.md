@@ -19,12 +19,12 @@ Aimer 的 yaw、半径展开、水平距离和弹道解算都以 `x-z` 为水平
 
 ## 代码结构
 
-- `Aimer.hpp` 保留模块 manifest、公有消息结构、配置项、`Aimer` 类声明和 topic 成员。
+- `Aimer.hpp` 保留模块 manifest、公有消息结构、配置项、`AimerCore` 运行核心和外层 `Aimer<Info>` 模块。
 - `AimerMath.hpp` 放角度归一化、坐标水平面约定、动态开火阈值和弹道解算。
 - `AimerTargetModel.hpp` 放 tracker target 预测、装甲板展开和瞄点选择。
 - `AimerPlanner.hpp` 放 TinyMPC 参考轨迹、求解器初始化和 `gimbal_plan` 生成。
 - `AimerImpl.hpp` 放 topic 回调、命令发布和主回调流程；模块自身实现已改为头文件内联，TinyMPC 自身 `.cpp` 仍由 CMake 编译。
-- `AimerPreview.hpp` 是独立预览模块，订阅原始帧和 Aimer 输出，绘制 tracker 装甲模型与最终瞄点。
+- `AimerPreview.hpp` 是 `Aimer<Info>` 内部持有的预览实现，订阅原始帧和 Aimer 输出，绘制 tracker 装甲模型与最终瞄点。
 
 ## 策略
 
@@ -37,14 +37,32 @@ Aimer 的 yaw、半径展开、水平距离和弹道解算都以 `x-z` 为水平
 
 ## 预览
 
-`AimerPreview` 是可选模块，不参与瞄准决策。它从 `CameraFrameSync` 取原始帧，
-用同一时间戳的 `tracker/target`、`tracker/gimbal_plan` 和 `tracker/send` 绘制：
+`Aimer` 内置 preview 是可选功能，不参与瞄准决策。它从构造参数 `sync`
+传入的 `CameraFrameSync<Info>` 取原始帧，用同一时间戳的 `tracker/target`、
+`tracker/gimbal_plan` 和 `tracker/send` 绘制：
 
 - tracker 整车几何展开后的装甲面轮廓。
 - 白色目标中心十字。
 - 红色最终瞄点；开火状态下额外画红圈。
 
 预览不会订阅 detector 结果，也不会输出额外调试 topic。
+
+在 BSP 里只实例化 `Aimer`，不要单独实例化 `AimerPreview`。开启方式是给
+`Aimer` 配置相机模板参数、`sync` 和 `cfg.preview`：
+
+```yaml
+- id: aimer
+  name: Aimer
+  template_args:
+    Info: {constexpr: AutoAimRunConfig::HikCameraInfo}
+  constructor_args:
+    cfg:
+      preview:
+        enabled: true
+        output_mode: web
+        web_stream_name: aimer_preview
+    sync: '@camera_frame_sync'
+```
 
 ## 边界
 

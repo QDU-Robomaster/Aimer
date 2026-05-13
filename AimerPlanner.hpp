@@ -38,7 +38,7 @@ using PlanTrajectory = Eigen::Matrix<double, 4, PLAN_HORIZON>;
  * @param yaw0 输出 yaw 偏置，用于让轨迹数值保持局部。
  * @return 所有参考采样都能计算时返回 true。
  */
-inline bool BuildReferenceTrajectory(const Aimer::Config& cfg,
+inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
                                      const ArmorTrackerTarget& target_msg,
                                      double delay_time, double bullet_speed,
                                      PlanTrajectory& trajectory, double& yaw0)
@@ -104,7 +104,7 @@ inline bool BuildReferenceTrajectory(const Aimer::Config& cfg,
 /**
  * @brief 初始化 yaw 和 pitch TinyMPC 求解器。
  */
-inline void Aimer::SetupGimbalPlanSolvers()
+inline void AimerCore::SetupGimbalPlanSolvers()
 {
   planner_ready_ = false;
   if (!cfg_.enable_mpc_plan)
@@ -165,7 +165,7 @@ inline void Aimer::SetupGimbalPlanSolvers()
 /**
  * @brief 在目标状态不连续时清理规划器历史。
  */
-inline void Aimer::ResetGimbalPlanHistory()
+inline void AimerCore::ResetGimbalPlanHistory()
 {
   last_plan_mpc_ = false;
 }
@@ -177,7 +177,7 @@ inline void Aimer::ResetGimbalPlanHistory()
  * @param fire 上游开火门控是否允许开火。
  * @return TinyMPC 产出有限计划时返回 true。
  */
-inline bool Aimer::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
+inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
                                       double delay_time, double bullet_speed,
                                       bool fire)
 {
@@ -256,7 +256,7 @@ inline bool Aimer::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
  * @param yaw 命令 yaw，单位 rad。
  * @param pitch 命令 pitch，单位 rad。
  */
-inline void Aimer::BuildFiniteDifferenceGimbalPlan(
+inline void AimerCore::BuildFiniteDifferenceGimbalPlan(
     const ArmorTrackerTarget& target_msg, bool control, bool fire, double yaw,
     double pitch)
 {
@@ -287,7 +287,7 @@ inline void Aimer::BuildFiniteDifferenceGimbalPlan(
  * @param pitch 命令 pitch，单位 rad。
  * @param bullet_speed 弹速，单位 m/s。
  */
-inline void Aimer::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
+inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
                                    double delay_time, bool control, bool fire,
                                    double yaw, double pitch, double bullet_speed)
 {

@@ -15,7 +15,7 @@
 /**
  * @brief 构造 Aimer 并注册 tracker、referee、gimbal 输入 topic 回调。
  */
-inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
+inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
                     Config cfg)
     : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
 {
@@ -26,7 +26,7 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
   LibXR::Topic target_topic =
       LibXR::Topic::FindOrCreate<ArmorTrackerTarget>("target", &tracker_domain);
   auto target_callback = LibXR::Topic::Callback::Create(
-      [](bool, Aimer* self, LibXR::RawData& data)
+      [](bool, AimerCore* self, LibXR::RawData& data)
       {
         auto* target_msg = reinterpret_cast<ArmorTrackerTarget*>(data.addr_);
         self->TargetCallback(*target_msg);
@@ -38,7 +38,7 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
   LibXR::Topic gimbal_rotation_topic =
       LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation", &gimbal_domain);
   auto gimbal_rotation_callback = LibXR::Topic::Callback::Create(
-      [](bool, Aimer* self, LibXR::RawData& data)
+      [](bool, AimerCore* self, LibXR::RawData& data)
       {
         auto* gimbal_rotation_msg =
             reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
@@ -53,7 +53,7 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
 /**
  * @brief 注册裁判系统运行期回调。
  */
-inline void Aimer::RegisterRuntimeLogCallbacks()
+inline void AimerCore::RegisterRuntimeLogCallbacks()
 {
   const char* referee_domain_name =
       (cfg_.referee_domain != nullptr && cfg_.referee_domain[0] != '\0')
@@ -67,7 +67,7 @@ inline void Aimer::RegisterRuntimeLogCallbacks()
         LibXR::Topic::FindOrCreate<AimerRefereeSummary>(cfg_.referee_topic,
                                                         &referee_domain);
     auto referee_callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, LibXR::RawData& data)
+        [](bool, AimerCore* self, LibXR::RawData& data)
         {
           auto* summary = reinterpret_cast<AimerRefereeSummary*>(data.addr_);
           self->RefereeSummaryCallback(*summary);
@@ -80,7 +80,7 @@ inline void Aimer::RegisterRuntimeLogCallbacks()
 /**
  * @brief 统一更新弹速缓存并按变化量输出日志。
  */
-inline void Aimer::UpdateBulletSpeed(float bullet_speed_msg, const char* source)
+inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* source)
 {
   if (!std::isfinite(bullet_speed_msg))
   {
@@ -116,7 +116,7 @@ inline void Aimer::UpdateBulletSpeed(float bullet_speed_msg, const char* source)
 /**
  * @brief 处理裁判系统摘要反馈。
  */
-inline void Aimer::RefereeSummaryCallback(const AimerRefereeSummary& summary)
+inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
   UpdateBulletSpeed(summary.launcher_data.bullet_speed, "host/robot_game_ref");
   LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
@@ -128,7 +128,7 @@ inline void Aimer::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 /**
  * @brief 按变化量记录热量、热量上限和冷却值。
  */
-inline void Aimer::LogHeatStatus(double current_heat, double heat_limit,
+inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
                                  double cooling, const char* source,
                                  bool force)
 {
@@ -183,7 +183,7 @@ inline void Aimer::LogHeatStatus(double current_heat, double heat_limit,
 /**
  * @brief 在自动开火状态翻转时输出统计日志。
  */
-inline void Aimer::LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
+inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
                                 double bullet_speed)
 {
   if (!cfg_.enable_runtime_log)
@@ -226,7 +226,7 @@ inline void Aimer::LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
  * @brief 根据云台姿态消息更新内部姿态缓存。
  * @param gimbal_rotation_msg 云台姿态四元数。
  */
-inline void Aimer::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg)
+inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg)
 {
   LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
   gimbal_rotation_ =
@@ -244,7 +244,7 @@ inline void Aimer::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotati
  * @param pitch 命令 pitch，单位 rad。
  * @return 所有开火门控通过时返回 true。
  */
-inline bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
+inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
                                   double selected_view_angle, bool shootable,
                                   double yaw, double pitch)
 {
@@ -310,7 +310,7 @@ inline bool Aimer::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
  * @brief 处理一帧 tracker 目标并发布全部 Aimer 输出。
  * @param target_msg 当前 tracker 目标消息。
  */
-inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
+inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
   send_msg_ = {};
   gimbal_plan_msg_ = {};

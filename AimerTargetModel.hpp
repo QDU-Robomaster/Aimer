@@ -99,7 +99,7 @@ struct PredictedTarget
  * @param target tracker 目标状态。
  * @return 固定预测延迟，单位 s。
  */
-inline double FixedPredictDelay(const Aimer::Config& cfg,
+inline double FixedPredictDelay(const AimerConfig& cfg,
                                 const ArmorTrackerTarget& target)
 {
   const bool high_speed = std::abs(target.v_yaw) > cfg.yaw_rate_threshold;
@@ -199,7 +199,7 @@ inline AimPoint ChooseAimPoint(const PredictedTarget& target, int& lock_id)
  * @param bullet_speed 弹速，单位 m/s。
  * @return 弹道解算成功时返回有效瞄准命令。
  */
-inline AimCommand ComputeNearestAimCommand(const Aimer::Config& cfg,
+inline AimCommand ComputeNearestAimCommand(const AimerConfig& cfg,
                                            const PredictedTarget& target,
                                            double bullet_speed)
 {
