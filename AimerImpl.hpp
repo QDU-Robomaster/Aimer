@@ -6,6 +6,8 @@
  */
 
 #include <cmath>
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "AimerPlanner.hpp"
@@ -18,6 +20,7 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
     : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
 {
   SetupGimbalPlanSolvers();
+  RegisterRuntimeLogCallbacks();
 
   LibXR::Topic::Domain tracker_domain("tracker");
   LibXR::Topic target_topic =
@@ -60,15 +63,293 @@ inline Aimer::Aimer(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
 }
 
 /**
+ * @brief 注册裁判系统与发射机构运行期日志回调。
+ */
+inline void Aimer::RegisterRuntimeLogCallbacks()
+{
+  const char* referee_domain_name =
+      (cfg_.referee_domain != nullptr && cfg_.referee_domain[0] != '\0')
+          ? cfg_.referee_domain
+          : "referee";
+  LibXR::Topic::Domain referee_domain(referee_domain_name);
+
+  if (cfg_.referee_topic != nullptr && cfg_.referee_topic[0] != '\0')
+  {
+    LibXR::Topic referee_topic =
+        LibXR::Topic::FindOrCreate<AimerRefereeSummary>(cfg_.referee_topic,
+                                                        &referee_domain);
+    auto referee_callback = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, LibXR::RawData& data)
+        {
+          auto* summary = reinterpret_cast<AimerRefereeSummary*>(data.addr_);
+          self->RefereeSummaryCallback(*summary);
+        },
+        this);
+    referee_topic.RegisterCallback(referee_callback);
+  }
+
+  if (cfg_.launcher_heat_topic != nullptr && cfg_.launcher_heat_topic[0] != '\0')
+  {
+    LibXR::Topic launcher_heat_topic =
+        LibXR::Topic::FindOrCreate<AimerLauncherHeatFeedback>(
+            cfg_.launcher_heat_topic, &referee_domain);
+    auto launcher_heat_callback = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, LibXR::RawData& data)
+        {
+          auto* heat_msg =
+              reinterpret_cast<AimerLauncherHeatFeedback*>(data.addr_);
+          self->LauncherHeatCallback(*heat_msg);
+        },
+        this);
+    launcher_heat_topic.RegisterCallback(launcher_heat_callback);
+  }
+
+  const char* webots_launcher_domain_name =
+      (cfg_.webots_launcher_domain != nullptr &&
+       cfg_.webots_launcher_domain[0] != '\0')
+          ? cfg_.webots_launcher_domain
+          : "webots_launcher";
+  LibXR::Topic::Domain webots_launcher_domain(webots_launcher_domain_name);
+
+  if (cfg_.webots_launcher_state_topic != nullptr &&
+      cfg_.webots_launcher_state_topic[0] != '\0')
+  {
+    LibXR::Topic webots_state_topic =
+        LibXR::Topic::FindOrCreate<AimerWebotsLauncherState>(
+            cfg_.webots_launcher_state_topic, &webots_launcher_domain);
+    auto webots_state_callback = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, LibXR::RawData& data)
+        {
+          auto* state = reinterpret_cast<AimerWebotsLauncherState*>(data.addr_);
+          self->WebotsLauncherStateCallback(*state);
+        },
+        this);
+    webots_state_topic.RegisterCallback(webots_state_callback);
+  }
+
+  if (cfg_.webots_launcher_shot_event_topic != nullptr &&
+      cfg_.webots_launcher_shot_event_topic[0] != '\0')
+  {
+    LibXR::Topic webots_shot_topic =
+        LibXR::Topic::FindOrCreate<AimerWebotsLauncherShotEvent>(
+            cfg_.webots_launcher_shot_event_topic, &webots_launcher_domain);
+    auto webots_shot_callback = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, LibXR::RawData& data)
+        {
+          auto* event = reinterpret_cast<AimerWebotsLauncherShotEvent*>(data.addr_);
+          self->WebotsLauncherShotCallback(*event);
+        },
+        this);
+    webots_shot_topic.RegisterCallback(webots_shot_callback);
+  }
+}
+
+/**
  * @brief 根据裁判系统弹速消息更新内部弹速缓存。
  * @param bullet_speed_msg 最新弹速，单位 m/s。
  */
 inline void Aimer::BulletSpeedCallback(float bullet_speed_msg)
 {
-  if (!std::isnan(bullet_speed_msg))
+  UpdateBulletSpeed(bullet_speed_msg, "referee/bullet_speed");
+}
+
+/**
+ * @brief 统一更新弹速缓存并按变化量输出日志。
+ */
+inline void Aimer::UpdateBulletSpeed(float bullet_speed_msg, const char* source)
+{
+  if (!std::isfinite(bullet_speed_msg))
   {
-    bullet_speed_.store(bullet_speed_msg, std::memory_order_relaxed);
+    return;
   }
+
+  const double new_bullet_speed = static_cast<double>(bullet_speed_msg);
+  const double old_bullet_speed =
+      bullet_speed_.exchange(new_bullet_speed, std::memory_order_relaxed);
+
+  if (!cfg_.enable_runtime_log)
+  {
+    return;
+  }
+
+  LibXR::Mutex::LockGuard lock(runtime_log_lock_);
+  const bool should_log =
+      !have_logged_bullet_speed_ ||
+      std::abs(new_bullet_speed - last_logged_bullet_speed_) >=
+          std::max(0.0, cfg_.bullet_speed_log_delta);
+  if (!should_log)
+  {
+    return;
+  }
+
+  XR_LOG_INFO("Aimer bullet_speed source=%s speed=%.2f m/s prev=%.2f m/s",
+              source, new_bullet_speed,
+              have_logged_bullet_speed_ ? last_logged_bullet_speed_ : old_bullet_speed);
+  last_logged_bullet_speed_ = new_bullet_speed;
+  have_logged_bullet_speed_ = true;
+}
+
+/**
+ * @brief 处理裁判系统摘要反馈。
+ */
+inline void Aimer::RefereeSummaryCallback(const AimerRefereeSummary& summary)
+{
+  UpdateBulletSpeed(summary.launcher_data.bullet_speed, "host/robot_game_ref");
+  LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
+                static_cast<double>(summary.robot_status.shooter_heat_limit),
+                static_cast<double>(summary.robot_status.shooter_cooling_value),
+                "host/robot_game_ref", false);
+}
+
+/**
+ * @brief 处理真实发射机构热量反馈。
+ */
+inline void Aimer::LauncherHeatCallback(const AimerLauncherHeatFeedback& heat_msg)
+{
+  LogHeatStatus(static_cast<double>(heat_msg.launcher_id1_17_heat),
+                static_cast<double>(heat_msg.robot_status.shooter_heat_limit),
+                static_cast<double>(heat_msg.robot_status.shooter_cooling_value),
+                "launcher_ref", false);
+}
+
+/**
+ * @brief 处理 Webots 发射机构状态反馈。
+ */
+inline void Aimer::WebotsLauncherStateCallback(const AimerWebotsLauncherState& state)
+{
+  LogHeatStatus(static_cast<double>(state.current_heat),
+                static_cast<double>(state.heat_limit),
+                static_cast<double>(state.cooling_rate),
+                "webots_launcher/state", false);
+  UpdateBulletSpeed(state.bullet_speed, "webots_launcher/state");
+}
+
+/**
+ * @brief 处理 Webots 实际出弹事件。
+ */
+inline void Aimer::WebotsLauncherShotCallback(const AimerWebotsLauncherShotEvent& event)
+{
+  if (!cfg_.enable_runtime_log)
+  {
+    return;
+  }
+
+  LibXR::Mutex::LockGuard lock(runtime_log_lock_);
+  if (event.shot_id == last_logged_webots_shot_id_)
+  {
+    return;
+  }
+
+  XR_LOG_INFO(
+      "Aimer shot source=webots shot=%llu heat=%.1f->%.1f limit=%.1f cooling=%.1f delay=%.3f s interval=%.3f s bullet=%.2f m/s",
+      static_cast<unsigned long long>(event.shot_id), event.heat_before,
+      event.heat_after, event.heat_limit, event.cooling_rate,
+      event.fire_delay_s, event.min_fire_interval_s, event.bullet_speed);
+  last_logged_webots_shot_id_ = event.shot_id;
+  last_logged_heat_ = event.heat_after;
+  last_logged_heat_limit_ = event.heat_limit;
+  last_logged_cooling_ = event.cooling_rate;
+  have_logged_heat_status_ = true;
+  last_logged_bullet_speed_ = event.bullet_speed;
+  have_logged_bullet_speed_ = true;
+  bullet_speed_.store(event.bullet_speed, std::memory_order_relaxed);
+}
+
+/**
+ * @brief 按变化量记录热量、热量上限和冷却值。
+ */
+inline void Aimer::LogHeatStatus(double current_heat, double heat_limit,
+                                 double cooling, const char* source,
+                                 bool force)
+{
+  if (!cfg_.enable_runtime_log)
+  {
+    return;
+  }
+
+  LibXR::Mutex::LockGuard lock(runtime_log_lock_);
+  const bool current_valid = std::isfinite(current_heat);
+  const bool heat_limit_valid = std::isfinite(heat_limit);
+  const bool cooling_valid = std::isfinite(cooling);
+  bool should_log = force || !have_logged_heat_status_;
+  if (!should_log && current_valid)
+  {
+    should_log = std::abs(current_heat - last_logged_heat_) >=
+        std::max(0.0, cfg_.heat_log_delta);
+  }
+  if (!should_log && heat_limit_valid)
+  {
+    should_log = std::abs(heat_limit - last_logged_heat_limit_) >=
+        std::max(0.0, cfg_.heat_log_delta);
+  }
+  if (!should_log && cooling_valid)
+  {
+    should_log = std::abs(cooling - last_logged_cooling_) >=
+        std::max(0.0, cfg_.heat_log_delta);
+  }
+  if (!should_log)
+  {
+    return;
+  }
+
+  if (current_valid)
+  {
+    XR_LOG_INFO("Aimer heat source=%s heat=%.1f limit=%.1f cooling=%.1f bullet=%.2f m/s",
+                source, current_heat, heat_limit, cooling,
+                bullet_speed_.load(std::memory_order_relaxed));
+    last_logged_heat_ = current_heat;
+  }
+  else
+  {
+    XR_LOG_INFO("Aimer heat source=%s heat=unknown limit=%.1f cooling=%.1f bullet=%.2f m/s",
+                source, heat_limit, cooling,
+                bullet_speed_.load(std::memory_order_relaxed));
+  }
+  last_logged_heat_limit_ = heat_limit;
+  last_logged_cooling_ = cooling;
+  have_logged_heat_status_ = true;
+}
+
+/**
+ * @brief 在自动开火状态翻转时输出统计日志。
+ */
+inline void Aimer::LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
+                                double bullet_speed)
+{
+  if (!cfg_.enable_runtime_log)
+  {
+    return;
+  }
+
+  LibXR::Mutex::LockGuard lock(runtime_log_lock_);
+  if (have_logged_fire_state_ && fire == last_logged_fire_state_)
+  {
+    return;
+  }
+
+  const double current_heat = last_logged_heat_;
+  const bool heat_valid = have_logged_heat_status_;
+  if (heat_valid)
+  {
+    XR_LOG_INFO(
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
+        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
+        target_msg.tracking ? 1 : 0,
+        static_cast<unsigned long long>(target_msg.image_timestamp_us),
+        send_msg_.yaw, send_msg_.pitch, bullet_speed, current_heat,
+        last_logged_heat_limit_, last_logged_cooling_);
+  }
+  else
+  {
+    XR_LOG_INFO(
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f",
+        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
+        target_msg.tracking ? 1 : 0,
+        static_cast<unsigned long long>(target_msg.image_timestamp_us),
+        send_msg_.yaw, send_msg_.pitch, bullet_speed);
+  }
+  last_logged_fire_state_ = fire;
+  have_logged_fire_state_ = true;
 }
 
 /**
@@ -165,8 +446,9 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
 
-  auto publish_outputs = [&]()
+  auto publish_outputs = [&](double publish_bullet_speed)
   {
+    LogFireState(target_msg, send_msg_.is_fire, publish_bullet_speed);
     uint8_t fire_notify = send_msg_.is_fire ? 1U : 0U;
     fire_notify_topic_.Publish(fire_notify);
     gimbal_plan_topic_.Publish(gimbal_plan_msg_);
@@ -193,7 +475,7 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
   {
     has_last_command_ = false;
     ResetGimbalPlanHistory();
-    publish_outputs();
+    publish_outputs(bullet_speed);
     return;
   }
 
@@ -204,7 +486,7 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
   if (!aim_point.valid)
   {
     ResetGimbalPlanHistory();
-    publish_outputs();
+    publish_outputs(bullet_speed);
     return;
   }
 
@@ -215,7 +497,7 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
   if (first_trajectory.unsolvable)
   {
     ResetGimbalPlanHistory();
-    publish_outputs();
+    publish_outputs(bullet_speed);
     return;
   }
 
@@ -225,7 +507,7 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
   if (!aim_point.valid)
   {
     ResetGimbalPlanHistory();
-    publish_outputs();
+    publish_outputs(bullet_speed);
     return;
   }
 
@@ -236,7 +518,7 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
   if (trajectory.unsolvable)
   {
     ResetGimbalPlanHistory();
-    publish_outputs();
+    publish_outputs(bullet_speed);
     return;
   }
 
@@ -256,5 +538,5 @@ inline void Aimer::TargetCallback(const ArmorTrackerTarget& target_msg)
 
   BuildGimbalPlan(target_msg, delay_time, true, send_msg_.is_fire, yaw, pitch,
                   bullet_speed);
-  publish_outputs();
+  publish_outputs(bullet_speed);
 }

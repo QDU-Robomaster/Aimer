@@ -40,6 +40,15 @@ constructor_args:
     q_pitch_vel: 1.0
     r_pitch_acc: 1.0
     mpc_max_iter: 10
+    enable_runtime_log: true
+    bullet_speed_log_delta: 0.05
+    heat_log_delta: 1.0
+    referee_domain: "host"
+    referee_topic: "robot_game_ref"
+    launcher_heat_topic: "launcher_ref"
+    webots_launcher_domain: "webots_launcher"
+    webots_launcher_state_topic: "state"
+    webots_launcher_shot_event_topic: "shot_event"
 template_args: []
 required_hardware: []
 depends:
@@ -56,8 +65,118 @@ depends:
 #include "GimbalPlan.hpp"
 #include "app_framework.hpp"
 #include "libxr.hpp"
+#include "logger.hpp"
 #include "mutex.hpp"
 #include "tinympc/tiny_api.hpp"
+
+/**
+ * @brief 裁判系统机器人状态摘要。
+ */
+struct [[gnu::packed]] AimerRefereeRobotStatus
+{
+  uint8_t robot_id{};
+  uint8_t robot_level{};
+  uint16_t remain_hp{};
+  uint16_t max_hp{};
+  uint16_t shooter_cooling_value{};
+  uint16_t shooter_heat_limit{};
+  uint16_t chassis_power_limit{};
+  uint8_t power_gimbal_output : 1 {};
+  uint8_t power_chassis_output : 1 {};
+  uint8_t power_launcher_output : 1 {};
+};
+
+/**
+ * @brief 裁判系统比赛状态摘要。
+ */
+struct [[gnu::packed]] AimerRefereeGameStatus
+{
+  uint8_t game_type : 4 {};
+  uint8_t game_progress : 4 {};
+  uint16_t stage_remain_time{};
+  uint64_t sync_time_stamp{};
+};
+
+/**
+ * @brief 裁判系统发射机构反馈摘要。
+ */
+struct [[gnu::packed]] AimerRefereeLauncherData
+{
+  uint8_t bullet_type{};
+  uint8_t launcher_id{};
+  uint8_t bullet_freq{};
+  float bullet_speed{};
+};
+
+/**
+ * @brief host/robot_game_ref 的轻量裁判系统摘要。
+ */
+struct [[gnu::packed]] AimerRefereeSummary
+{
+  AimerRefereeRobotStatus robot_status{};
+  AimerRefereeGameStatus game_status{};
+  AimerRefereeLauncherData launcher_data{};
+};
+
+/**
+ * @brief launcher_ref 的发射机构热量反馈。
+ */
+struct [[gnu::packed]] AimerLauncherHeatFeedback
+{
+  AimerRefereeRobotStatus robot_status{};
+  uint16_t launcher_id1_17_heat{};
+};
+
+/**
+ * @brief Webots 发射机构状态快照。
+ */
+struct AimerWebotsLauncherState
+{
+  uint64_t update_time_us{0};
+  uint64_t last_request_time_us{0};
+  uint64_t last_fire_time_us{0};
+  uint64_t next_fire_request_us{0};
+  uint64_t pending_fire_time_us{0};
+  uint64_t shot_count{0};
+  float current_heat{0.0F};
+  float heat_limit{0.0F};
+  float cooling_rate{0.0F};
+  float single_shot_heat{0.0F};
+  float bullet_speed{0.0F};
+  float max_fire_frequency_hz{0.0F};
+  float fire_delay_s{0.0F};
+  float min_fire_interval_s{0.0F};
+  float current_fire_frequency_hz{0.0F};
+  uint8_t launcher_enabled{1};
+  uint8_t can_fire{0};
+  uint8_t pending_fire{0};
+  uint8_t last_reject_reason{0};
+};
+
+/**
+ * @brief Webots 发射机构实际出弹事件。
+ */
+struct AimerWebotsLauncherShotEvent
+{
+  uint64_t shot_id{0};
+  uint64_t request_time_us{0};
+  uint64_t fire_time_us{0};
+  uint64_t shot_interval_us{0};
+  float bullet_speed{0.0F};
+  float heat_before{0.0F};
+  float heat_after{0.0F};
+  float heat_limit{0.0F};
+  float cooling_rate{0.0F};
+  float single_shot_heat{0.0F};
+  float fire_delay_s{0.0F};
+  float min_fire_interval_s{0.0F};
+};
+
+static_assert(sizeof(AimerRefereeRobotStatus) == 13);
+static_assert(sizeof(AimerRefereeGameStatus) == 11);
+static_assert(sizeof(AimerRefereeLauncherData) == 7);
+static_assert(sizeof(AimerRefereeSummary) == 31);
+static_assert(sizeof(AimerLauncherHeatFeedback) == 15);
 
 /**
  * @brief 发布到 tracker/send 的云台命令载荷。
@@ -151,6 +270,24 @@ class Aimer : public LibXR::Application
     double r_pitch_acc{1.0};
     /// TinyMPC ADMM 最大迭代次数。
     int mpc_max_iter{10};
+    /// 是否输出运行期统计日志。
+    bool enable_runtime_log{true};
+    /// 弹速变化超过该阈值时打印反馈日志，单位 m/s。
+    double bullet_speed_log_delta{0.05};
+    /// 热量变化超过该阈值时打印反馈日志。
+    double heat_log_delta{1.0};
+    /// 裁判系统摘要 topic 域。
+    const char* referee_domain{"host"};
+    /// 裁判系统摘要 topic 名。
+    const char* referee_topic{"robot_game_ref"};
+    /// 发射机构热量反馈 topic 名；空字符串表示不订阅。
+    const char* launcher_heat_topic{"launcher_ref"};
+    /// Webots 发射机构 topic 域。
+    const char* webots_launcher_domain{"webots_launcher"};
+    /// Webots 发射机构状态 topic 名；空字符串表示不订阅。
+    const char* webots_launcher_state_topic{"state"};
+    /// Webots 实际出弹事件 topic 名；空字符串表示不订阅。
+    const char* webots_launcher_shot_event_topic{"shot_event"};
   };
 
   /**
@@ -168,6 +305,40 @@ class Aimer : public LibXR::Application
    * @brief 根据裁判系统 topic 更新最新弹速。
    */
   void BulletSpeedCallback(float bullet_speed_msg);
+  /**
+   * @brief 注册裁判系统与发射机构运行期日志回调。
+   */
+  void RegisterRuntimeLogCallbacks();
+  /**
+   * @brief 统一更新弹速缓存并按变化量输出日志。
+   */
+  void UpdateBulletSpeed(float bullet_speed_msg, const char* source);
+  /**
+   * @brief 处理裁判系统摘要反馈。
+   */
+  void RefereeSummaryCallback(const AimerRefereeSummary& summary);
+  /**
+   * @brief 处理真实发射机构热量反馈。
+   */
+  void LauncherHeatCallback(const AimerLauncherHeatFeedback& heat_msg);
+  /**
+   * @brief 处理 Webots 发射机构状态反馈。
+   */
+  void WebotsLauncherStateCallback(const AimerWebotsLauncherState& state);
+  /**
+   * @brief 处理 Webots 实际出弹事件。
+   */
+  void WebotsLauncherShotCallback(const AimerWebotsLauncherShotEvent& event);
+  /**
+   * @brief 按变化量记录热量、热量上限和冷却值。
+   */
+  void LogHeatStatus(double current_heat, double heat_limit, double cooling,
+                     const char* source, bool force);
+  /**
+   * @brief 在自动开火状态翻转时输出统计日志。
+   */
+  void LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
+                    double bullet_speed);
   /**
    * @brief 更新最新实测云台旋转。
    */
@@ -220,9 +391,19 @@ class Aimer : public LibXR::Application
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};
   bool last_plan_mpc_{false};
+  bool have_logged_fire_state_{false};
+  bool last_logged_fire_state_{false};
+  bool have_logged_bullet_speed_{false};
+  double last_logged_bullet_speed_{0.0};
+  bool have_logged_heat_status_{false};
+  double last_logged_heat_{0.0};
+  double last_logged_heat_limit_{0.0};
+  double last_logged_cooling_{0.0};
+  uint64_t last_logged_webots_shot_id_{0};
   TinySolver* yaw_solver_{nullptr};
   TinySolver* pitch_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
+  mutable LibXR::Mutex runtime_log_lock_{};
 
   AimerSend send_msg_{};
   GimbalPlan gimbal_plan_msg_{};

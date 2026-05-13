@@ -8,6 +8,8 @@
 
 - 输入 `tracker/target`：`ArmorTracker` 发布的 `ArmorTrackerTarget`。
 - 输入 `referee/bullet_speed`：裁判系统或上游估计的当前弹速，异常或过低时回退到默认弹速。
+- 输入 `host/robot_game_ref`：可选裁判摘要，用于更新反馈弹速并记录热量上限和冷却值。
+- 输入 `launcher_ref` / `webots_launcher/*`：可选发射机构反馈，只用于 info 级统计日志。
 - 输入 `gimbal/rotation`：云台当前姿态，只用于自动开火判定。
 - 输出 `tracker/gimbal_plan`：TinyMPC 云台计划，包含目标角、计划角、角速度和角加速度。
 - 输出 `tracker/fire_notify`：开火通知，由 `tracker/send.is_fire` 派生。
@@ -24,6 +26,7 @@ Aimer 的 yaw、半径展开、水平距离和弹道解算都以 `x-z` 为水平
 - `AimerTargetModel.hpp` 放 tracker target 预测、装甲板展开和瞄点选择。
 - `AimerPlanner.hpp` 放 TinyMPC 参考轨迹、求解器初始化和 `gimbal_plan` 生成。
 - `AimerImpl.hpp` 放 topic 回调、命令发布和主回调流程；模块自身实现已改为头文件内联，TinyMPC 自身 `.cpp` 仍由 CMake 编译。
+- `AimerPreview.hpp` 是独立预览模块，订阅原始帧和 Aimer 输出，绘制 tracker 装甲模型与最终瞄点。
 
 ## 策略
 
@@ -32,9 +35,22 @@ Aimer 的 yaw、半径展开、水平距离和弹道解算都以 `x-z` 为水平
 - 第一次弹道飞行时间用于继续预测目标，最终瞄点是命中时刻的最近装甲板。
 - `gimbal_plan` 使用 yaw/pitch 双积分 TinyMPC，默认 `HORIZON=100`、`dt=0.01`、`HALF_HORIZON=50`、`max_yaw_acc=100`、`max_pitch_acc=100`。
 - `is_fire` 需要命令稳定、云台对齐且目标可打；没有 `gimbal/rotation` 时不会自动开火。
+- 运行期 info 日志只记录统计事件：反馈弹速变化、开火状态翻转、热量/冷却配置变化和实际出弹热量事件。
+
+## 预览
+
+`AimerPreview` 是可选模块，不参与瞄准决策。它从 `CameraFrameSync` 取原始帧，
+用同一时间戳的 `tracker/target`、`tracker/gimbal_plan` 和 `tracker/send` 绘制：
+
+- tracker 整车几何展开后的装甲面轮廓。
+- 白色目标中心十字。
+- 红色最终瞄点；开火状态下额外画红圈。
+
+预览不会订阅 detector 结果，也不会输出额外调试 topic。
 
 ## 边界
 
 - Aimer 不负责目标跟踪，也不修改同步链路。
 - Aimer 不依赖旧版跳变标志、额外序号或历史 delay 兼容字段，当前输入以
   `ArmorTrackerTarget` 字段和显式 `*_extra_predict_s` 延迟配置为准。
+- 运行日志不参与控制闭环；热量反馈缺失时不会伪造当前热量。
