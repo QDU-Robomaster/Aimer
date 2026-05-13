@@ -366,7 +366,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   AimerDetail::PredictedTarget base_target{target_msg};
   base_target.Predict(delay_time);
   AimerDetail::AimPoint aim_point =
-      AimerDetail::ChooseAimPoint(base_target, lock_id_);
+      AimerDetail::ChooseAimPoint(cfg_, base_target, lock_id_);
   if (!aim_point.valid)
   {
     ResetGimbalPlanHistory();
@@ -387,7 +387,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 
   AimerDetail::PredictedTarget hit_target = base_target;
   hit_target.Predict(first_trajectory.fly_time);
-  aim_point = AimerDetail::ChooseAimPoint(hit_target, lock_id_);
+  aim_point = AimerDetail::ChooseAimPoint(cfg_, hit_target, lock_id_);
   if (!aim_point.valid)
   {
     ResetGimbalPlanHistory();

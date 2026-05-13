@@ -135,6 +135,47 @@ inline double ViewAngle(const ArmorTrackerTarget& target, const Eigen::Vector4d&
 }
 
 /**
+ * @brief 判断目标是否按低速旋转策略处理。
+ * @param cfg Aimer 运行时配置。
+ * @param target tracker 目标状态。
+ * @return yaw 角速度未超过策略阈值时返回 true。
+ */
+inline bool IsLowYawRateTarget(const AimerConfig& cfg,
+                               const ArmorTrackerTarget& target)
+{
+  return std::abs(target.v_yaw) <= cfg.yaw_rate_threshold;
+}
+
+/**
+ * @brief 判断当前选中的装甲板姿态是否允许开火。
+ * @param cfg Aimer 运行时配置。
+ * @param target tracker 目标状态。
+ * @param view_angle 装甲板相对整车中心方位的视角，单位 rad。
+ * @return 该姿态处于可打窗口时返回 true。
+ */
+inline bool IsArmorFaceShootable(const AimerConfig& cfg,
+                                 const ArmorTrackerTarget& target,
+                                 double view_angle)
+{
+  if (target.id == ArmorNumber::OUTPOST)
+  {
+    return std::abs(view_angle) <= OUTPOST_APPROACH_WINDOW_RAD;
+  }
+
+  if (IsLowYawRateTarget(cfg, target))
+  {
+    return std::abs(view_angle) <= NORMAL_FACE_WINDOW_RAD;
+  }
+
+  if (std::abs(view_angle) > NORMAL_APPROACH_WINDOW_RAD)
+  {
+    return false;
+  }
+  return target.v_yaw > 0.0 ? view_angle < NORMAL_EXIT_WINDOW_RAD
+                            : view_angle > -NORMAL_EXIT_WINDOW_RAD;
+}
+
+/**
  * @brief 将面索引限制到当前目标有效范围。
  * @param face_index 输入面索引。
  * @param face_count 当前目标面数。
@@ -167,6 +208,7 @@ inline AimPoint BuildAimPoint(const PredictedTarget& target, int armor_index,
 
 /**
  * @brief 按指定索引选择装甲板候选。
+ * @param cfg Aimer 运行时配置。
  * @param target 预测后的 tracker 目标。
  * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
  * @param armor_index 指定面索引。
@@ -174,8 +216,9 @@ inline AimPoint BuildAimPoint(const PredictedTarget& target, int armor_index,
  * @return 选中的瞄点。
  */
 inline AimPoint ChooseArmorByIndex(
-    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
-    int armor_index, int& lock_id)
+    const AimerConfig& cfg, const PredictedTarget& target,
+    const std::vector<Eigen::Vector4d>& armor_xyza_list, int armor_index,
+    int& lock_id)
 {
   if (armor_xyza_list.empty())
   {
@@ -186,7 +229,9 @@ inline AimPoint ChooseArmorByIndex(
   const int selected_index =
       ClampFaceIndex(armor_index, static_cast<int>(armor_xyza_list.size()));
   lock_id = selected_index;
-  return BuildAimPoint(target, selected_index, armor_xyza_list[selected_index], true);
+  const double view_angle = ViewAngle(target.msg, armor_xyza_list[selected_index]);
+  return BuildAimPoint(target, selected_index, armor_xyza_list[selected_index],
+                       IsArmorFaceShootable(cfg, target.msg, view_angle));
 }
 
 /**
@@ -326,11 +371,13 @@ inline AimPoint ChooseDirectionalArmor(
 
 /**
  * @brief 按 tracker 面状态和可打窗口选择瞄点。
+ * @param cfg Aimer 运行时配置。
  * @param target 预测后的 tracker 目标。
  * @param lock_id 输入上一锁定索引，输出新的选中索引。
  * @return 选中的瞄点；无可瞄目标时返回 invalid。
  */
-inline AimPoint ChooseAimPoint(const PredictedTarget& target, int& lock_id)
+inline AimPoint ChooseAimPoint(const AimerConfig& cfg, const PredictedTarget& target,
+                               int& lock_id)
 {
   if (!target.msg.tracking)
   {
@@ -347,13 +394,13 @@ inline AimPoint ChooseAimPoint(const PredictedTarget& target, int& lock_id)
 
   if (!target.msg.face_switch_observed)
   {
-    return ChooseArmorByIndex(target, armor_xyza_list, target.msg.tracked_face_index,
-                              lock_id);
+    return ChooseArmorByIndex(cfg, target, armor_xyza_list,
+                              target.msg.tracked_face_index, lock_id);
   }
 
   const auto view_angles = BuildFaceViewAngles(target, armor_xyza_list);
   const bool is_outpost = target.msg.id == ArmorNumber::OUTPOST;
-  if (!is_outpost && std::abs(target.msg.radius_1) <= 2.0)
+  if (!is_outpost && IsLowYawRateTarget(cfg, target.msg))
   {
     return ChooseWindowLockedArmor(target, armor_xyza_list, view_angles, lock_id);
   }
@@ -374,7 +421,7 @@ inline AimCommand ComputeAimCommand(const AimerConfig& cfg,
                                     double bullet_speed, int& lock_id)
 {
   AimCommand command;
-  command.aim_point = ChooseAimPoint(target, lock_id);
+  command.aim_point = ChooseAimPoint(cfg, target, lock_id);
   if (!command.aim_point.valid)
   {
     return command;
