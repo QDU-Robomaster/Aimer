@@ -273,7 +273,6 @@ inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_ro
  * @param selected_view_angle 选中装甲板相对整车中心方位的视角。
  * @param shootable 当前策略是否允许打该装甲板。
  * @param yaw 命令 yaw，单位 rad。
- * @param pitch 命令 pitch，单位 rad。
  * @return 所有开火门控通过时返回 true。
  */
 inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
@@ -349,11 +348,11 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     AimerHostGimbalTarget host_gimbal{};
     if (gimbal_plan_msg_.control)
     {
-      host_gimbal.pit = gimbal_plan_msg_.pitch;
+      host_gimbal.rol = gimbal_plan_msg_.pitch;
       host_gimbal.yaw = gimbal_plan_msg_.yaw;
-      host_gimbal.pit_dot = gimbal_plan_msg_.pitch_vel;
+      host_gimbal.rol_dot = gimbal_plan_msg_.pitch_vel;
       host_gimbal.yaw_dot = gimbal_plan_msg_.yaw_vel;
-      host_gimbal.pit_ddot = gimbal_plan_msg_.pitch_acc;
+      host_gimbal.rol_ddot = gimbal_plan_msg_.pitch_acc;
       host_gimbal.yaw_ddot = gimbal_plan_msg_.yaw_acc;
     }
     AimerHostFireNotify host_fire{final_fire};
@@ -439,7 +438,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   preview_frame.aim_xyza = aim_point.xyza;
   const double yaw = AimerDetail::LimitRad(
       AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
-  const double pitch = -(trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD);
+  const double pitch = trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD;
 
   const bool raw_fire =
       ShouldAutoFire(final_xyz, aim_point.view_angle, aim_point.shootable, yaw);

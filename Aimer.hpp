@@ -143,21 +143,21 @@ static_assert(sizeof(AimerRefereeSummary) == 31);
  */
 struct AimerHostGimbalTarget
 {
-  /// roll 命令，单位 rad。
+  /// 机械俯仰轴 roll 命令，单位 rad。
   float rol{0.0f};
-  /// pitch 命令，单位 rad。
+  /// pitch 字段保留为 ABI 对齐，当前不承载俯仰命令。
   float pit{0.0f};
   /// yaw 命令，单位 rad。
   float yaw{0.0f};
-  /// roll 速度前馈，单位 rad/s。
+  /// 机械俯仰轴 roll 速度前馈，单位 rad/s。
   float rol_dot{0.0f};
-  /// pitch 速度前馈，单位 rad/s。
+  /// pitch 速度字段保留为 ABI 对齐。
   float pit_dot{0.0f};
   /// yaw 速度前馈，单位 rad/s。
   float yaw_dot{0.0f};
-  /// roll 加速度前馈，单位 rad/s^2。
+  /// 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
   float rol_ddot{0.0f};
-  /// pitch 加速度前馈，单位 rad/s^2。
+  /// pitch 加速度字段保留为 ABI 对齐。
   float pit_ddot{0.0f};
   /// yaw 加速度前馈，单位 rad/s^2。
   float yaw_ddot{0.0f};
