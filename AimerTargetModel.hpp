@@ -228,7 +228,7 @@ inline AimCommand ComputeNearestAimCommand(const AimerConfig& cfg,
   command.fly_time = trajectory.fly_time;
   command.yaw_pitch.x() =
       LimitRad(BearingYaw(xyz) + cfg.yaw_offset * DEG2RAD);
-  command.yaw_pitch.y() = -(trajectory.pitch + cfg.pitch_offset * DEG2RAD);
+  command.yaw_pitch.y() = trajectory.pitch + cfg.pitch_offset * DEG2RAD;
   return command;
 }
 }  // namespace AimerDetail
