@@ -55,6 +55,12 @@ class AimerPreview : public LibXR::Application
  public:
   using SourceFrame = ArmorDetectionsSourceFrame<CameraInfoV>;
   using ImageFrame = typename SourceFrame::ImageFrame;
+  using TargetFramePacket = ArmorTrackerTargetFramePacket<CameraInfoV>;
+  struct ProjectionTransform
+  {
+    std::array<double, 9> rotation{};
+    std::array<double, 3> translation{};
+  };
 
   /**
    * @brief 构造 Aimer preview。
@@ -75,39 +81,12 @@ class AimerPreview : public LibXR::Application
    * @brief 处理 Aimer Core 同步提交的本帧状态。
    */
   void OnAimerFrame(const AimerPreviewFrame& frame,
-                    const SourceFrame* source_frame)
+                    const TargetFramePacket* target_frame)
   {
-    SubmitPreview(frame, source_frame);
+    SubmitPreview(frame, target_frame);
   }
 
  private:
-  /**
-   * @brief tracker 输出坐标系点转 tracker 内部 world/gimbal 坐标系。
-   */
-  static Eigen::Vector3d OutputToWorld(const Eigen::Vector3d& point)
-  {
-    return {point.y(), -point.x(), point.z()};
-  }
-
-  /**
-   * @brief world/gimbal 坐标系点按同源 IMU 姿态转到当前图像光轴坐标系。
-   */
-  static Eigen::Vector3d WorldToOptical(const Eigen::Vector3d& point_world,
-                                        const Eigen::Quaterniond& q_gimbal_to_world)
-  {
-    static const Eigen::Matrix3d kCameraToGimbal =
-        (Eigen::Matrix3d() << 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0)
-            .finished();
-    static const Eigen::Matrix3d kImuBasisToTrackerBasis =
-        (Eigen::Matrix3d() << 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-            .finished();
-    const Eigen::Matrix3d R_gimbal_to_world =
-        kImuBasisToTrackerBasis * q_gimbal_to_world.toRotationMatrix() *
-        kImuBasisToTrackerBasis.transpose();
-    return kCameraToGimbal.transpose() *
-           R_gimbal_to_world.transpose() * point_world;
-  }
-
   /**
    * @brief 相机光轴坐标转像素。
    */
@@ -140,11 +119,23 @@ class AimerPreview : public LibXR::Application
    * @brief tracker 输出坐标系点转像素。
    */
   static bool ProjectOutputPoint(const Eigen::Vector3d& point,
-                                 const Eigen::Quaterniond& q_gimbal_to_world,
+                                 const ProjectionTransform& projection,
                                  cv::Point& uv)
   {
-    return ProjectOpticalPoint(
-        WorldToOptical(OutputToWorld(point), q_gimbal_to_world), uv);
+    Eigen::Matrix3d R_output_to_camera;
+    for (int row = 0; row < 3; ++row)
+    {
+      for (int col = 0; col < 3; ++col)
+      {
+        R_output_to_camera(row, col) =
+            projection.rotation[static_cast<std::size_t>(row * 3 + col)];
+      }
+    }
+    const Eigen::Vector3d t_output_to_camera(
+        projection.translation[0], projection.translation[1],
+        projection.translation[2]);
+    return ProjectOpticalPoint(R_output_to_camera * point + t_output_to_camera,
+                               uv);
   }
 
   /**
@@ -157,12 +148,12 @@ class AimerPreview : public LibXR::Application
     const double yaw = xyza[3];
     const Eigen::Vector3d width_dir(std::cos(yaw), std::sin(yaw), 0.0);
     const Eigen::Vector3d face_normal(-std::sin(yaw), std::cos(yaw), 0.0);
-    const double pitch = AimerDetail::ARMOR_PITCH_DEG * AimerDetail::DEG2RAD;
-    const double pitch_sign =
+    const double tilt = AimerDetail::ARMOR_TILT_DEG * AimerDetail::DEG2RAD;
+    const double tilt_sign =
         target.id == ArmorNumber::OUTPOST ? -1.0 : 1.0;
     const Eigen::Vector3d height_dir =
-        face_normal * (pitch_sign * std::sin(pitch)) +
-        Eigen::Vector3d(0.0, 0.0, std::cos(pitch));
+        face_normal * (tilt_sign * std::sin(tilt)) +
+        Eigen::Vector3d(0.0, 0.0, std::cos(tilt));
     const Eigen::Vector3d half_w =
         0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * width_dir;
     const Eigen::Vector3d half_h = 0.5 * AimerDetail::ARMOR_HEIGHT_M * height_dir;
@@ -175,14 +166,14 @@ class AimerPreview : public LibXR::Application
    */
   static bool DrawArmorQuad(cv::Mat& canvas, const Eigen::Vector4d& xyza,
                             const ArmorTrackerTarget& target,
-                            const Eigen::Quaterniond& q_gimbal_to_world,
+                            const ProjectionTransform& projection,
                             const cv::Scalar& color, int thickness)
   {
     const auto quad = BuildArmorQuad(xyza, target);
     std::array<cv::Point, 4> corners{};
     for (std::size_t i = 0; i < quad.size(); ++i)
     {
-      if (!ProjectOutputPoint(quad[i], q_gimbal_to_world, corners[i]))
+      if (!ProjectOutputPoint(quad[i], projection, corners[i]))
       {
         return false;
       }
@@ -201,7 +192,7 @@ class AimerPreview : public LibXR::Application
    * @brief 绘制 tracker 当前四个装甲板和当前绑定面。
    */
   static void DrawTrackerArmors(cv::Mat& canvas, const AimerPreviewFrame& frame,
-                                const Eigen::Quaterniond& q_gimbal_to_world)
+                                const ProjectionTransform& projection)
   {
     if (!frame.have_target || !frame.target.tracking)
     {
@@ -221,12 +212,12 @@ class AimerPreview : public LibXR::Application
       const cv::Scalar color =
           tracked ? cv::Scalar(80, 255, 80) : cv::Scalar(255, 180, 40);
       DrawArmorQuad(canvas, armor_xyza_list[static_cast<std::size_t>(i)],
-                    frame.target, q_gimbal_to_world, color, tracked ? 2 : 1);
+                    frame.target, projection, color, tracked ? 2 : 1);
 
       cv::Point center_uv;
       if (ProjectOutputPoint(
               armor_xyza_list[static_cast<std::size_t>(i)].head<3>(),
-              q_gimbal_to_world, center_uv))
+              projection, center_uv))
       {
         centers[static_cast<std::size_t>(i)] = center_uv;
         center_valid[static_cast<std::size_t>(i)] = true;
@@ -253,7 +244,7 @@ class AimerPreview : public LibXR::Application
    * @brief 绘制 Aimer 预测选板和最终瞄点。
    */
   static void DrawPrediction(cv::Mat& canvas, const AimerPreviewFrame& frame,
-                             const Eigen::Quaterniond& q_gimbal_to_world)
+                             const ProjectionTransform& projection)
   {
     if (!frame.have_target || !frame.target.tracking || !frame.aim_point_valid)
     {
@@ -263,11 +254,11 @@ class AimerPreview : public LibXR::Application
     const bool fire = frame.have_host_fire && frame.host_fire.isfire;
     const cv::Scalar color = fire ? cv::Scalar(0, 0, 255)
                                   : cv::Scalar(0, 180, 255);
-    DrawArmorQuad(canvas, frame.aim_xyza, frame.target, q_gimbal_to_world,
+    DrawArmorQuad(canvas, frame.aim_xyza, frame.target, projection,
                   color, 2);
 
     cv::Point aim_uv;
-    if (ProjectOutputPoint(frame.aim_point, q_gimbal_to_world, aim_uv))
+    if (ProjectOutputPoint(frame.aim_point, projection, aim_uv))
     {
       cv::drawMarker(canvas, aim_uv, color, cv::MARKER_TILTED_CROSS,
                      fire ? 24 : 20, 2, cv::LINE_AA);
@@ -307,36 +298,11 @@ class AimerPreview : public LibXR::Application
    * @brief 绘制完整 Aimer 预览。
    */
   static void DrawPreview(cv::Mat& canvas, const AimerPreviewFrame& frame,
-                          const Eigen::Quaterniond& q_gimbal_to_world)
+                          const ProjectionTransform& projection)
   {
-    DrawTrackerArmors(canvas, frame, q_gimbal_to_world);
-    DrawPrediction(canvas, frame, q_gimbal_to_world);
+    DrawTrackerArmors(canvas, frame, projection);
+    DrawPrediction(canvas, frame, projection);
     DrawStatus(canvas, frame);
-  }
-
-  /**
-   * @brief 从 tracker 同源帧提取 gimbal-to-world 姿态。
-   */
-  static bool SourceQuaternion(const SourceFrame& source_frame,
-                               Eigen::Quaterniond& q_gimbal_to_world)
-  {
-    if (source_frame.imu == nullptr)
-    {
-      return false;
-    }
-
-    q_gimbal_to_world =
-        Eigen::Quaterniond(source_frame.imu->rotation_wxyz[0],
-                           source_frame.imu->rotation_wxyz[1],
-                           source_frame.imu->rotation_wxyz[2],
-                           source_frame.imu->rotation_wxyz[3]);
-    if (!std::isfinite(q_gimbal_to_world.norm()) ||
-        q_gimbal_to_world.norm() < 1e-9)
-    {
-      return false;
-    }
-    q_gimbal_to_world.normalize();
-    return true;
   }
 
   /**
@@ -394,34 +360,33 @@ class AimerPreview : public LibXR::Application
    * @brief 提交预览帧。
    */
   void SubmitPreview(const AimerPreviewFrame& frame,
-                     const SourceFrame* source_frame)
+                     const TargetFramePacket* target_frame)
   {
-    if (!preview_.Running() || source_frame == nullptr ||
-        source_frame->image_frame == nullptr)
+    if (!preview_.Running() || target_frame == nullptr ||
+        target_frame->source_frame.image_frame == nullptr)
     {
       return;
     }
-    if (source_frame->image_timestamp_us != frame.image_timestamp_us ||
-        source_frame->image_frame->timestamp_us != frame.image_timestamp_us)
+    const SourceFrame& source_frame = target_frame->source_frame;
+    if (source_frame.image_timestamp_us != frame.image_timestamp_us ||
+        source_frame.image_frame->timestamp_us != frame.image_timestamp_us)
     {
       return;
     }
-    Eigen::Quaterniond q_gimbal_to_world;
-    if (!SourceQuaternion(*source_frame, q_gimbal_to_world))
-    {
-      return;
-    }
+    const ProjectionTransform projection{
+        target_frame->output_to_camera_rotation,
+        target_frame->output_to_camera_translation};
 
     cv::Mat bgr_image;
-    if (!MakeBgrImage(*source_frame->image_frame, bgr_image))
+    if (!MakeBgrImage(*source_frame.image_frame, bgr_image))
     {
       return;
     }
 
     preview_.Submit(bgr_image,
-                    [frame, q_gimbal_to_world](cv::Mat& canvas)
+                    [frame, projection](cv::Mat& canvas)
                     {
-                      DrawPreview(canvas, frame, q_gimbal_to_world);
+                      DrawPreview(canvas, frame, projection);
                     });
   }
 

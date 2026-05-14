@@ -24,8 +24,8 @@ struct GimbalPlan
 
   /// 规划器输出点的参考 yaw，单位 rad。
   float target_yaw{0.0f};
-  /// 规划器输出点的参考 pitch，单位 rad。
-  float target_pitch{0.0f};
+  /// 规划器输出点的参考 roll 轴命令，单位 rad。
+  float target_roll{0.0f};
 
   /// 规划后的 yaw 命令，单位 rad。
   float yaw{0.0f};
@@ -34,12 +34,12 @@ struct GimbalPlan
   /// 规划后的 yaw 加速度前馈，单位 rad/s^2。
   float yaw_acc{0.0f};
 
-  /// 规划后的 pitch 命令，单位 rad。
-  float pitch{0.0f};
-  /// 规划后的 pitch 速度前馈，单位 rad/s。
-  float pitch_vel{0.0f};
-  /// 规划后的 pitch 加速度前馈，单位 rad/s^2。
-  float pitch_acc{0.0f};
+  /// 规划后的 roll 轴命令，单位 rad。
+  float roll{0.0f};
+  /// 规划后的 roll 轴速度前馈，单位 rad/s。
+  float roll_vel{0.0f};
+  /// 规划后的 roll 轴加速度前馈，单位 rad/s^2。
+  float roll_acc{0.0f};
 };
 
 #endif  // QDU_GIMBAL_PLAN_HPP

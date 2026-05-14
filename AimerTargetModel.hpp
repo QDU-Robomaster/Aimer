@@ -49,10 +49,10 @@ struct AimPoint
  */
 struct AimCommand
 {
-  /// yaw_pitch 和 fly_time 是否有效。
+  /// yaw_roll 和 fly_time 是否有效。
   bool valid{false};
-  /// 命令 yaw 和 pitch，单位 rad。
-  Eigen::Vector2d yaw_pitch{Eigen::Vector2d::Zero()};
+  /// 命令 yaw 和机械 roll 轴，单位 rad。
+  Eigen::Vector2d yaw_roll{Eigen::Vector2d::Zero()};
   /// 估计弹丸飞行时间，单位 s。
   double fly_time{0.0};
   /// 用于计算命令的选中瞄点。
@@ -93,8 +93,7 @@ struct PredictedTarget
       const double angle = LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
-      // tracker 输出帧为 x 右、y 前、z 上；该展开式对应
-      // ArmorTracker 内部 world frame 经 WorldToOutputFrame() 后的结果。
+      // tracker 输出帧为 x 右、y 前、z 上。
       const double armor_x = msg.position.x() + radius * std::sin(angle);
       const double armor_y = msg.position.y() - radius * std::cos(angle);
       const double armor_z =
@@ -479,7 +478,7 @@ inline AimPoint ChooseTrajectoryAimPoint(const AimerConfig& cfg,
  * @brief 由有效瞄准命令生成单发命中候选。
  */
 inline AimerShotCandidate MakeShotCandidate(const AimPoint& aim_point, double yaw,
-                                            double pitch, double fly_time)
+                                            double roll, double fly_time)
 {
   AimerShotCandidate candidate;
   if (!aim_point.valid)
@@ -493,7 +492,7 @@ inline AimerShotCandidate MakeShotCandidate(const AimPoint& aim_point, double ya
   candidate.view_angle = aim_point.view_angle;
   candidate.hit_xyza = aim_point.xyza;
   candidate.yaw = yaw;
-  candidate.pitch = pitch;
+  candidate.roll = roll;
   candidate.fly_time = fly_time;
   return candidate;
 }
@@ -507,12 +506,12 @@ inline AimerShotCandidate MakeShotCandidate(const AimCommand& command)
   {
     return {};
   }
-  return MakeShotCandidate(command.aim_point, command.yaw_pitch.x(),
-                           command.yaw_pitch.y(), command.fly_time);
+  return MakeShotCandidate(command.aim_point, command.yaw_roll.x(),
+                           command.yaw_roll.y(), command.fly_time);
 }
 
 /**
- * @brief 根据已经选好的瞄点解算 yaw、pitch 和飞行时间。
+ * @brief 根据已经选好的瞄点解算 yaw、roll 轴命令和飞行时间。
  */
 inline AimCommand BuildAimCommandFromAimPoint(const AimerConfig& cfg,
                                              const AimPoint& aim_point,
@@ -528,7 +527,7 @@ inline AimCommand BuildAimCommandFromAimPoint(const AimerConfig& cfg,
   const Eigen::Vector3d xyz = command.aim_point.xyza.head<3>();
   const double horizontal_distance = HorizontalDistance(xyz);
   const auto trajectory =
-      SolveTrajectoryPitch(bullet_speed, horizontal_distance, BallisticHeight(xyz));
+      SolveTrajectoryElevation(bullet_speed, horizontal_distance, BallisticHeight(xyz));
   if (trajectory.unsolvable)
   {
     return command;
@@ -536,9 +535,9 @@ inline AimCommand BuildAimCommandFromAimPoint(const AimerConfig& cfg,
 
   command.valid = true;
   command.fly_time = trajectory.fly_time;
-  command.yaw_pitch.x() =
+  command.yaw_roll.x() =
       LimitRad(BearingYaw(xyz) + cfg.yaw_offset * DEG2RAD);
-  command.yaw_pitch.y() = trajectory.pitch + cfg.pitch_offset * DEG2RAD;
+  command.yaw_roll.y() = trajectory.elevation + cfg.roll_offset * DEG2RAD;
   return command;
 }
 
@@ -567,7 +566,7 @@ inline bool IsArmorOnVisibleSide(const PredictedTarget& target,
  */
 inline AimerShotCandidate ChooseShotCandidateForCommand(
     const AimerConfig& cfg, const PredictedTarget& target, double bullet_speed,
-    double command_yaw, double command_pitch)
+    double command_yaw, double command_roll)
 {
   AimerShotCandidate best_candidate;
   double best_error = std::numeric_limits<double>::max();
@@ -597,8 +596,8 @@ inline AimerShotCandidate ChooseShotCandidateForCommand(
     }
 
     const double error =
-        std::hypot(LimitRad(command.yaw_pitch.x() - command_yaw),
-                   command.yaw_pitch.y() - command_pitch);
+        std::hypot(LimitRad(command.yaw_roll.x() - command_yaw),
+                   command.yaw_roll.y() - command_roll);
     if (error < best_error)
     {
       best_error = error;
@@ -610,7 +609,7 @@ inline AimerShotCandidate ChooseShotCandidateForCommand(
 }
 
 /**
- * @brief 计算指向策略选中装甲板的 yaw、pitch 和飞行时间。
+ * @brief 计算指向策略选中装甲板的 yaw、roll 轴命令和飞行时间。
  * @param cfg Aimer 运行时配置。
  * @param target 预测后的 tracker 目标。
  * @param bullet_speed 弹速，单位 m/s。
@@ -626,7 +625,7 @@ inline AimCommand ComputeAimCommand(const AimerConfig& cfg,
 }
 
 /**
- * @brief 计算轨迹规划 reference 使用的 yaw、pitch 和飞行时间。
+ * @brief 计算轨迹规划 reference 使用的 yaw、roll 轴命令和飞行时间。
  */
 inline AimCommand ComputeTrajectoryAimCommand(const AimerConfig& cfg,
                                              const PredictedTarget& target,

@@ -27,8 +27,8 @@ inline constexpr double SMALL_ARMOR_WIDTH_M = 0.135;
 inline constexpr double ARMOR_HEIGHT_M = 0.056;
 /// 自动开火角阈值预留的弹道散布裕量，单位 m。
 inline constexpr double FIRE_BULLET_SPREAD_M = 0.015;
-/// RoboMaster 装甲板固定安装俯仰角，单位 deg。
-inline constexpr double ARMOR_PITCH_DEG = 15.0;
+/// RoboMaster 装甲板固定安装倾角，单位 deg。
+inline constexpr double ARMOR_TILT_DEG = 15.0;
 /// TinyMPC ADMM 最大迭代次数。
 inline constexpr int MPC_MAX_ITER = 10;
 
@@ -87,7 +87,7 @@ inline double BallisticHeight(const Eigen::MatrixBase<Derived>& point)
 }
 
 /**
- * @brief 闭式弹道 pitch 解算结果。
+ * @brief 闭式弹道仰角解算结果。
  */
 struct TrajectorySolution
 {
@@ -95,8 +95,8 @@ struct TrajectorySolution
   bool unsolvable{false};
   /// 估计弹丸飞行时间，单位 s。
   double fly_time{0.0};
-  /// 加配置 pitch 偏置前的发射 pitch，单位 rad。
-  double pitch{0.0};
+  /// 加配置 roll 轴偏置前的发射仰角，单位 rad。
+  double elevation{0.0};
 };
 
 /**
@@ -122,32 +122,32 @@ inline double DynamicYawFireThreshold(const AimerConfig& cfg,
 }
 
 /**
- * @brief 为选中装甲板计算动态 pitch/roll 开火阈值。
+ * @brief 为选中装甲板计算动态 roll 轴开火阈值。
  * @param cfg Aimer 运行时配置。
  * @param target_xyz tracker 输出 B 坐标系下的选中瞄点。
- * @return pitch/roll 阈值，单位 rad。
+ * @return roll 轴阈值，单位 rad。
  */
-inline double DynamicPitchFireThreshold(const AimerConfig& cfg,
+inline double DynamicRollFireThreshold(const AimerConfig& cfg,
                                         const Eigen::Vector3d& target_xyz)
 {
   const double horizontal_distance =
       std::max(MIN_HORIZONTAL_DISTANCE_M, HorizontalDistance(target_xyz));
-  const double pitch_half = std::atan2(0.5 * ARMOR_HEIGHT_M, horizontal_distance);
-  const double spread_pitch = std::atan2(FIRE_BULLET_SPREAD_M, horizontal_distance);
-  return std::clamp(pitch_half - spread_pitch, cfg.min_fire_threshold,
+  const double roll_half = std::atan2(0.5 * ARMOR_HEIGHT_M, horizontal_distance);
+  const double spread_roll = std::atan2(FIRE_BULLET_SPREAD_M, horizontal_distance);
+  return std::clamp(roll_half - spread_roll, cfg.min_fire_threshold,
                     cfg.max_fire_threshold);
 }
 
 /**
- * @brief 解算低抛弹道 pitch 和飞行时间。
+ * @brief 解算低抛弹道仰角和飞行时间。
  * @param bullet_speed 弹速，单位 m/s。
  * @param horizontal_distance tracker x-y 平面距离，单位 m。
  * @param target_height tracker z 方向目标高度，单位 m。
  * @return 弹道解或无解标志。
  */
-inline TrajectorySolution SolveTrajectoryPitch(double bullet_speed,
-                                               double horizontal_distance,
-                                               double target_height)
+inline TrajectorySolution SolveTrajectoryElevation(double bullet_speed,
+                                                   double horizontal_distance,
+                                                   double target_height)
 {
   TrajectorySolution solution;
 
@@ -169,15 +169,17 @@ inline TrajectorySolution SolveTrajectoryPitch(double bullet_speed,
     return solution;
   }
 
-  const double tan_pitch_1 = (-b + std::sqrt(delta)) / (2.0 * a);
-  const double tan_pitch_2 = (-b - std::sqrt(delta)) / (2.0 * a);
-  const double pitch_1 = std::atan(tan_pitch_1);
-  const double pitch_2 = std::atan(tan_pitch_2);
-  const double fly_time_1 = horizontal_distance / (bullet_speed * std::cos(pitch_1));
-  const double fly_time_2 = horizontal_distance / (bullet_speed * std::cos(pitch_2));
+  const double tan_elevation_1 = (-b + std::sqrt(delta)) / (2.0 * a);
+  const double tan_elevation_2 = (-b - std::sqrt(delta)) / (2.0 * a);
+  const double elevation_1 = std::atan(tan_elevation_1);
+  const double elevation_2 = std::atan(tan_elevation_2);
+  const double fly_time_1 =
+      horizontal_distance / (bullet_speed * std::cos(elevation_1));
+  const double fly_time_2 =
+      horizontal_distance / (bullet_speed * std::cos(elevation_2));
 
   solution.unsolvable = false;
-  solution.pitch = (fly_time_1 < fly_time_2) ? pitch_1 : pitch_2;
+  solution.elevation = (fly_time_1 < fly_time_2) ? elevation_1 : elevation_2;
   solution.fly_time = (fly_time_1 < fly_time_2) ? fly_time_1 : fly_time_2;
   return solution;
 }

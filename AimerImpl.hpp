@@ -221,31 +221,31 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
   if (have_logged_current_heat_)
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
         target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed,
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
         last_logged_heat_, last_logged_heat_limit_, last_logged_cooling_);
   }
   else if (have_logged_heat_status_)
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f heat=unknown limit=%.1f cooling=%.1f",
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f bullet=%.2f heat=unknown limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
         target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed,
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
         last_logged_heat_limit_, last_logged_cooling_);
   }
   else
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f",
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f bullet=%.2f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
         target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed);
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed);
   }
   last_logged_fire_state_ = fire;
   have_logged_fire_state_ = true;
@@ -269,17 +269,17 @@ inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_ro
  * @param shot_candidate 当前发射请求对应的未来命中候选。
  * @param plan_fire_enabled 命中面和当前云台计划是否允许开火。
  * @param yaw 命令 yaw，单位 rad。
- * @param pitch 命令机械 pitch/roll，单位 rad。
+ * @param roll 命令机械 roll 轴，单位 rad。
  * @return 所有开火门控通过时返回 true。
  */
 inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
                                       bool plan_fire_enabled, double yaw,
-                                      double pitch)
+                                      double roll)
 {
-  auto remember_command = [this, yaw, pitch]()
+  auto remember_command = [this, yaw, roll]()
   {
     last_command_yaw_ = yaw;
-    last_command_pitch_ = pitch;
+    last_command_roll_ = roll;
     has_last_command_ = true;
   };
 
@@ -293,8 +293,8 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   const double yaw_threshold =
       AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz,
                                            shot_candidate.view_angle);
-  const double pitch_threshold =
-      AimerDetail::DynamicPitchFireThreshold(cfg_, target_xyz);
+  const double roll_threshold =
+      AimerDetail::DynamicRollFireThreshold(cfg_, target_xyz);
 
   if (!cfg_.auto_fire || !plan_fire_enabled ||
       !shot_candidate.face_shootable_at_hit)
@@ -317,7 +317,7 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   }
 
   const auto gimbal_euler = gimbal_rotation.ToEulerAngleZYX();
-  const double gimbal_pitch = gimbal_euler[0];
+  const double gimbal_roll = gimbal_euler[0];
   const double gimbal_yaw = gimbal_euler[2];
 
   if (!has_last_command_)
@@ -328,16 +328,16 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
 
   const double command_error_yaw =
       std::abs(AimerDetail::LimitRad(last_command_yaw_ - yaw));
-  const double command_error_pitch =
-      std::abs(AimerDetail::LimitRad(last_command_pitch_ - pitch));
+  const double command_error_roll =
+      std::abs(AimerDetail::LimitRad(last_command_roll_ - roll));
   const double gimbal_error_yaw = std::abs(AimerDetail::LimitRad(gimbal_yaw - yaw));
-  const double gimbal_error_pitch =
-      std::abs(AimerDetail::LimitRad(gimbal_pitch - pitch));
+  const double gimbal_error_roll =
+      std::abs(AimerDetail::LimitRad(gimbal_roll - roll));
 
   const bool command_stable = command_error_yaw < yaw_threshold * 2.0 &&
-                              command_error_pitch < pitch_threshold * 2.0;
+                              command_error_roll < roll_threshold * 2.0;
   const bool gimbal_aligned = gimbal_error_yaw < yaw_threshold &&
-                              gimbal_error_pitch < pitch_threshold;
+                              gimbal_error_roll < roll_threshold;
 
   remember_command();
   return command_stable && gimbal_aligned;
@@ -364,11 +364,11 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     AimerHostGimbalTarget host_gimbal{};
     if (gimbal_plan_msg_.control)
     {
-      host_gimbal.rol = gimbal_plan_msg_.pitch;
+      host_gimbal.rol = gimbal_plan_msg_.roll;
       host_gimbal.yaw = gimbal_plan_msg_.yaw;
-      host_gimbal.rol_dot = gimbal_plan_msg_.pitch_vel;
+      host_gimbal.rol_dot = gimbal_plan_msg_.roll_vel;
       host_gimbal.yaw_dot = gimbal_plan_msg_.yaw_vel;
-      host_gimbal.rol_ddot = gimbal_plan_msg_.pitch_acc;
+      host_gimbal.rol_ddot = gimbal_plan_msg_.roll_acc;
       host_gimbal.yaw_ddot = gimbal_plan_msg_.yaw_acc;
     }
     AimerHostFireNotify host_fire{final_fire};
@@ -417,7 +417,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 
   const Eigen::Vector3d first_xyz = aim_point.xyza.head<3>();
   const double first_horizontal_distance = AimerDetail::HorizontalDistance(first_xyz);
-  const auto first_trajectory = AimerDetail::SolveTrajectoryPitch(
+  const auto first_trajectory = AimerDetail::SolveTrajectoryElevation(
       bullet_speed, first_horizontal_distance, AimerDetail::BallisticHeight(first_xyz));
   if (first_trajectory.unsolvable)
   {
@@ -438,7 +438,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 
   const Eigen::Vector3d hit_xyz = aim_point.xyza.head<3>();
   const double hit_horizontal_distance = AimerDetail::HorizontalDistance(hit_xyz);
-  const auto trajectory = AimerDetail::SolveTrajectoryPitch(
+  const auto trajectory = AimerDetail::SolveTrajectoryElevation(
       bullet_speed, hit_horizontal_distance, AimerDetail::BallisticHeight(hit_xyz));
   if (trajectory.unsolvable)
   {
@@ -454,17 +454,17 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   preview_frame.aim_xyza = aim_point.xyza;
   const double yaw = AimerDetail::LimitRad(
       AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
-  const double pitch = trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD;
+  const double roll = trajectory.elevation + cfg_.roll_offset * AimerDetail::DEG2RAD;
 
   const AimerShotCandidate direct_shot_candidate =
-      AimerDetail::MakeShotCandidate(aim_point, yaw, pitch, trajectory.fly_time);
+      AimerDetail::MakeShotCandidate(aim_point, yaw, roll, trajectory.fly_time);
 
   AimerShotCandidate fire_shot_candidate = direct_shot_candidate;
-  BuildGimbalPlan(target_msg, delay_time, true, yaw, pitch, bullet_speed,
+  BuildGimbalPlan(target_msg, delay_time, true, yaw, roll, bullet_speed,
                   direct_shot_candidate, fire_shot_candidate);
 
   gimbal_plan_msg_.fire =
       ShouldAutoFire(fire_shot_candidate, gimbal_plan_msg_.fire,
-                     gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch);
+                     gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll);
   publish_outputs(bullet_speed);
 }

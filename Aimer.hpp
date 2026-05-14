@@ -11,7 +11,7 @@ module_description: ballistic aimer with DevC host target output
 constructor_args:
   cfg:
     yaw_offset: -1.0
-    pitch_offset: -1.4
+    roll_offset: -1.4
     yaw_rate_threshold: 2.0
     default_bullet_speed: 23.0
     min_valid_bullet_speed: 14.0
@@ -31,10 +31,10 @@ constructor_args:
     q_yaw_pos: 9000000.0
     q_yaw_vel: 0.0
     r_yaw_acc: 1.0
-    max_pitch_acc: 100.0
-    q_pitch_pos: 9000000.0
-    q_pitch_vel: 0.0
-    r_pitch_acc: 1.0
+    max_roll_acc: 100.0
+    q_roll_pos: 9000000.0
+    q_roll_vel: 0.0
+    r_roll_acc: 1.0
     preview:
       enabled: false
       preview_window_name: "aimer_preview"
@@ -216,8 +216,8 @@ struct AimerShotCandidate
   Eigen::Vector4d hit_xyza{Eigen::Vector4d::Zero()};
   /// 指向该命中候选的 yaw，单位 rad。
   double yaw{0.0};
-  /// 指向该命中候选的机械 pitch/roll，单位 rad。
-  double pitch{0.0};
+  /// 指向该命中候选的机械 roll 轴命令，单位 rad。
+  double roll{0.0};
   /// 命中候选对应的弹丸飞行时间，单位 s。
   double fly_time{0.0};
 };
@@ -229,8 +229,8 @@ struct AimerConfig
 {
     /// 施加到弹道命令上的固定 yaw 偏置，单位 deg。
     double yaw_offset{-1.0};
-    /// 施加到弹道命令上的固定 pitch 偏置，单位 deg。
-    double pitch_offset{-1.4};
+    /// 施加到机械 roll 轴命令上的固定偏置，单位 deg。
+    double roll_offset{-1.4};
     /// 低速与旋转策略的 yaw 角速度阈值，单位 rad/s。
     double yaw_rate_threshold{2.0};
     /// 弹速异常时使用的默认弹速，单位 m/s。
@@ -269,14 +269,14 @@ struct AimerConfig
     double q_yaw_vel{0.0};
     /// TinyMPC yaw 加速度代价。
     double r_yaw_acc{1.0};
-    /// TinyMPC pitch 加速度约束，单位 rad/s^2。
-    double max_pitch_acc{100.0};
-    /// TinyMPC pitch 位置代价。
-    double q_pitch_pos{9000000.0};
-    /// TinyMPC pitch 速度代价。
-    double q_pitch_vel{0.0};
-    /// TinyMPC pitch 加速度代价。
-    double r_pitch_acc{1.0};
+    /// TinyMPC roll 轴加速度约束，单位 rad/s^2。
+    double max_roll_acc{100.0};
+    /// TinyMPC roll 轴位置代价。
+    double q_roll_pos{9000000.0};
+    /// TinyMPC roll 轴速度代价。
+    double q_roll_vel{0.0};
+    /// TinyMPC roll 轴加速度代价。
+    double r_roll_acc{1.0};
     /// Aimer 内置实时预览运行参数。
     VisionPreview::RuntimeParam preview{};
     /// 是否输出运行期统计日志。
@@ -288,7 +288,7 @@ struct AimerConfig
 };
 
 /**
- * @brief 选择目标装甲板、解算弹道 yaw/pitch，并发布云台命令。
+ * @brief 选择目标装甲板、解算 yaw/roll 轴命令，并发布云台命令。
  */
 class AimerCore : public LibXR::Application
 {
@@ -360,9 +360,9 @@ class AimerCore : public LibXR::Application
    * @brief 根据计划命令稳定性和云台两轴对准情况评估自动开火门控。
    */
   bool ShouldAutoFire(const AimerShotCandidate& shot_candidate,
-                      bool plan_fire_enabled, double yaw, double pitch);
+                      bool plan_fire_enabled, double yaw, double roll);
   /**
-   * @brief 初始化 yaw 和 pitch TinyMPC 求解器。
+   * @brief 初始化 yaw 和 roll 轴 TinyMPC 求解器。
    */
   void SetupGimbalPlanSolvers();
   /**
@@ -372,16 +372,16 @@ class AimerCore : public LibXR::Application
                           double delay_time, double bullet_speed,
                           AimerShotCandidate& fire_shot_candidate);
   /**
-   * @brief 在 TinyMPC 关闭或不可用时构建直接 yaw/pitch 计划。
+   * @brief 在 TinyMPC 关闭或不可用时构建直接 yaw/roll 计划。
    */
   void BuildFiniteDifferenceGimbalPlan(const ArmorTrackerTarget& target_msg,
                                        bool control, bool fire_enabled,
-                                       double yaw, double pitch);
+                                       double yaw, double roll);
   /**
    * @brief 在 TinyMPC 和直接云台计划之间选择。
    */
   void BuildGimbalPlan(const ArmorTrackerTarget& target_msg, double delay_time,
-                       bool control, double yaw, double pitch,
+                       bool control, double yaw, double roll,
                        double bullet_speed,
                        const AimerShotCandidate& direct_shot_candidate,
                        AimerShotCandidate& fire_shot_candidate);
@@ -397,7 +397,7 @@ class AimerCore : public LibXR::Application
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
   bool has_last_command_{false};
   double last_command_yaw_{0.0};
-  double last_command_pitch_{0.0};
+  double last_command_roll_{0.0};
   bool has_gimbal_rotation_{false};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};
@@ -412,7 +412,7 @@ class AimerCore : public LibXR::Application
   double last_logged_heat_limit_{0.0};
   double last_logged_cooling_{0.0};
   TinySolver* yaw_solver_{nullptr};
-  TinySolver* pitch_solver_{nullptr};
+  TinySolver* roll_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
   mutable LibXR::Mutex runtime_log_lock_{};
   PreviewSink preview_sink_{nullptr};
@@ -488,9 +488,9 @@ class Aimer : public AimerCore
    */
   void TargetFrameCallback(const TargetFramePacket& frame)
   {
-    current_source_frame_ = &frame.source_frame;
+    current_target_frame_ = &frame;
     TargetCallback(*frame.target);
-    current_source_frame_ = nullptr;
+    current_target_frame_ = nullptr;
   }
 
   /**
@@ -500,11 +500,11 @@ class Aimer : public AimerCore
   {
     if (preview_.has_value())
     {
-      preview_->OnAimerFrame(frame, current_source_frame_);
+      preview_->OnAimerFrame(frame, current_target_frame_);
     }
   }
 
   LibXR::Topic target_frame_topic_ = LibXR::Topic();
-  const SourceFrame* current_source_frame_{nullptr};
+  const TargetFramePacket* current_target_frame_{nullptr};
   std::optional<AimerPreview<CameraInfoV>> preview_;
 };

@@ -33,8 +33,8 @@ Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，
 - TinyMPC 参考轨迹在 `HORIZON=100`、`dt=0.01`、`HALF_HORIZON=50`
   的预测窗口内逐采样重新选择几何最近装甲板，使云台在切板前具备提前减速能力。
 - 云台目标使用 yaw/roll 双积分 TinyMPC，默认 `max_yaw_acc=50`、
-  `max_pitch_acc=100`、`q_yaw_pos=q_pitch_pos=9000000`、
-  `q_yaw_vel=q_pitch_vel=0`、`r=1`。
+  `max_roll_acc=100`、`q_yaw_pos=q_roll_pos=9000000`、
+  `q_yaw_vel=q_roll_vel=0`、`r=1`。
 - `host/fire_notify` 绑定单发弹丸的未来命中候选：在开火采样点按计划枪线遍历所有物理装甲面，选择角误差最小的命中面，再检查该面命中时刻是否可打。
 - `is_fire` 需要命中面可打、计划枪线与命中候选一致、命令稳定、云台对齐；没有 `host/gimbal_quat` 时不会自动开火。
 - 运行期 info 日志只记录统计事件：`host/robot_game_ref` 反馈弹速变化、开火状态翻转以及
