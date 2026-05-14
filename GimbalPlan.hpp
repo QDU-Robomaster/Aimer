@@ -2,7 +2,7 @@
 
 /**
  * @file GimbalPlan.hpp
- * @brief Aimer 发布的云台计划命令载荷。
+ * @brief Aimer 内部云台计划命令载荷。
  */
 
 #ifndef QDU_GIMBAL_PLAN_HPP
@@ -11,7 +11,7 @@
 #include <cstdint>
 
 /**
- * @brief 从 Aimer 规划器采样得到的云台前馈计划。
+ * @brief 从 Aimer 规划器采样得到的内部云台前馈计划。
  */
 struct GimbalPlan
 {
@@ -19,7 +19,7 @@ struct GimbalPlan
   uint64_t image_timestamp_us{0};
   /// 下级控制器是否应使用该命令。
   bool control{false};
-  /// 当前命令点是否允许开火。
+  /// 当前命令点是否允许继续进入最终开火门控。
   bool fire{false};
 
   /// 规划器输出点的参考 yaw，单位 rad。

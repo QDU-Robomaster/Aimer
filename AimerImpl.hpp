@@ -20,25 +20,7 @@ inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager
     : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
 {
   SetupGimbalPlanSolvers();
-  RegisterRuntimeLogCallbacks();
-
-  LibXR::Topic::Domain gimbal_domain("gimbal");
-  LibXR::Topic gimbal_rotation_topic =
-      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation", &gimbal_domain);
-  auto gimbal_rotation_callback = LibXR::Topic::Callback::Create(
-      [](bool, AimerCore* self, LibXR::RawData& data)
-      {
-        auto* gimbal_rotation_msg =
-            reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
-        if (gimbal_rotation_msg != nullptr &&
-            data.size_ == sizeof(LibXR::Quaternion<float>))
-        {
-          self->GimbalRotationCallback(*gimbal_rotation_msg);
-        }
-      },
-      this);
-  gimbal_rotation_topic.RegisterCallback(gimbal_rotation_callback);
-
+  RegisterHostInputCallbacks();
   app.Register(*this);
 }
 
@@ -63,14 +45,45 @@ inline void AimerCore::PublishPreviewState(const AimerPreviewFrame& state)
 }
 
 /**
- * @brief 注册裁判系统运行期回调。
+ * @brief 注册裁判系统与云台姿态输入回调。
  */
-inline void AimerCore::RegisterRuntimeLogCallbacks()
+inline void AimerCore::RegisterHostInputCallbacks()
 {
-  LibXR::Topic::Domain referee_domain("host");
+  RegisterGimbalQuatInput();
+  RegisterRefereeSummaryInput();
+}
+
+/**
+ * @brief 注册 C 板回传的云台姿态四元数输入 topic。
+ */
+inline void AimerCore::RegisterGimbalQuatInput()
+{
+  LibXR::Topic topic =
+      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("gimbal_quat",
+                                                           &host_domain_);
+  auto callback = LibXR::Topic::Callback::Create(
+      [](bool, AimerCore* self, LibXR::RawData& data)
+      {
+        auto* rotation_msg =
+            reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
+        if (rotation_msg != nullptr &&
+            data.size_ == sizeof(LibXR::Quaternion<float>))
+        {
+          self->GimbalRotationCallback(*rotation_msg);
+        }
+      },
+      this);
+  topic.RegisterCallback(callback);
+}
+
+/**
+ * @brief 注册裁判系统摘要输入 topic。
+ */
+inline void AimerCore::RegisterRefereeSummaryInput()
+{
   LibXR::Topic referee_topic =
       LibXR::Topic::FindOrCreate<AimerRefereeSummary>("robot_game_ref",
-                                                      &referee_domain);
+                                                      &host_domain_);
   auto referee_callback = LibXR::Topic::Callback::Create(
       [](bool, AimerCore* self, LibXR::RawData& data)
       {
@@ -136,8 +149,8 @@ inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary
  * @brief 按变化量记录热量、热量上限和冷却值。
  */
 inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
-                                 double cooling, const char* source,
-                                 bool force)
+                                     double cooling, const char* source,
+                                     bool force)
 {
   if (!cfg_.enable_runtime_log)
   {
@@ -175,6 +188,7 @@ inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
                 source, current_heat, heat_limit, cooling,
                 bullet_speed_.load(std::memory_order_relaxed));
     last_logged_heat_ = current_heat;
+    have_logged_current_heat_ = true;
   }
   else
   {
@@ -191,7 +205,7 @@ inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
  * @brief 在自动开火状态翻转时输出统计日志。
  */
 inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
-                                double bullet_speed)
+                                    double bullet_speed)
 {
   if (!cfg_.enable_runtime_log)
   {
@@ -204,16 +218,24 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
     return;
   }
 
-  const double current_heat = last_logged_heat_;
-  const bool heat_valid = have_logged_heat_status_;
-  if (heat_valid)
+  if (have_logged_current_heat_)
   {
     XR_LOG_INFO(
         "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
         target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed, current_heat,
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed,
+        last_logged_heat_, last_logged_heat_limit_, last_logged_cooling_);
+  }
+  else if (have_logged_heat_status_)
+  {
+    XR_LOG_INFO(
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f pitch=%.3f bullet=%.2f heat=unknown limit=%.1f cooling=%.1f",
+        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
+        target_msg.tracking ? 1 : 0,
+        static_cast<unsigned long long>(target_msg.image_timestamp_us),
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch, bullet_speed,
         last_logged_heat_limit_, last_logged_cooling_);
   }
   else

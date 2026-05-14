@@ -296,9 +296,17 @@ class AimerCore : public LibXR::Application
 
  private:
   /**
-   * @brief 注册裁判系统与发射机构运行期日志回调。
+   * @brief 注册裁判系统与云台姿态输入回调。
    */
-  void RegisterRuntimeLogCallbacks();
+  void RegisterHostInputCallbacks();
+  /**
+   * @brief 注册 C 板回传的云台姿态四元数输入 topic。
+   */
+  void RegisterGimbalQuatInput();
+  /**
+   * @brief 注册裁判系统摘要输入 topic。
+   */
+  void RegisterRefereeSummaryInput();
   /**
    * @brief 统一更新弹速缓存并按变化量输出日志。
    */
@@ -373,6 +381,7 @@ class AimerCore : public LibXR::Application
   bool have_logged_bullet_speed_{false};
   double last_logged_bullet_speed_{0.0};
   bool have_logged_heat_status_{false};
+  bool have_logged_current_heat_{false};
   double last_logged_heat_{0.0};
   double last_logged_heat_limit_{0.0};
   double last_logged_cooling_{0.0};
