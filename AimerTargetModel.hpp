@@ -235,17 +235,15 @@ inline AimPoint ChooseArmorByIndex(
 }
 
 /**
- * @brief 选择水平距离最近的装甲板候选。
- * @param target 预测后的 tracker 目标。
- * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
- * @param lock_id 输入上一锁定索引，输出新的选中索引。
- * @param shootable 该选择是否允许开火。
- * @return 选中的瞄点。
+ * @brief 选择水平距离最近的装甲板索引。
  */
-inline AimPoint ChooseNearestArmor(
-    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
-    int& lock_id, bool shootable)
+inline int NearestArmorIndex(const std::vector<Eigen::Vector4d>& armor_xyza_list)
 {
+  if (armor_xyza_list.empty())
+  {
+    return -1;
+  }
+
   int nearest_index = 0;
   double nearest_distance = std::numeric_limits<double>::max();
   for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
@@ -258,9 +256,52 @@ inline AimPoint ChooseNearestArmor(
     }
   }
 
+  return nearest_index;
+}
+
+/**
+ * @brief 选择水平距离最近的装甲板候选。
+ * @param target 预测后的 tracker 目标。
+ * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
+ * @param lock_id 输入上一锁定索引，输出新的选中索引。
+ * @param shootable 该选择是否允许开火。
+ * @return 选中的瞄点。
+ */
+inline AimPoint ChooseNearestArmor(
+    const PredictedTarget& target, const std::vector<Eigen::Vector4d>& armor_xyza_list,
+    int& lock_id, bool shootable)
+{
+  const int nearest_index = NearestArmorIndex(armor_xyza_list);
+  if (nearest_index < 0)
+  {
+    lock_id = -1;
+    return {};
+  }
+
   lock_id = nearest_index;
   return BuildAimPoint(target, nearest_index, armor_xyza_list[nearest_index],
                        shootable);
+}
+
+/**
+ * @brief 为轨迹规划选择水平距离最近的装甲板，并重新计算命中姿态。
+ * @param cfg Aimer 运行时配置。
+ * @param target 预测后的 tracker 目标。
+ * @param armor_xyza_list 候选装甲板中心和 yaw 列表。
+ * @param lock_id 输出新的选中索引。
+ * @return 选中的轨迹参考瞄点。
+ */
+inline AimPoint ChooseNearestTrajectoryArmor(
+    const AimerConfig& cfg, const PredictedTarget& target,
+    const std::vector<Eigen::Vector4d>& armor_xyza_list, int& lock_id)
+{
+  const int nearest_index = NearestArmorIndex(armor_xyza_list);
+  if (nearest_index < 0)
+  {
+    lock_id = -1;
+    return {};
+  }
+  return ChooseArmorByIndex(cfg, target, armor_xyza_list, nearest_index, lock_id);
 }
 
 /**
@@ -409,19 +450,76 @@ inline AimPoint ChooseAimPoint(const AimerConfig& cfg, const PredictedTarget& ta
 }
 
 /**
- * @brief 计算指向策略选中装甲板的 yaw、pitch 和飞行时间。
- * @param cfg Aimer 运行时配置。
- * @param target 预测后的 tracker 目标。
- * @param bullet_speed 弹速，单位 m/s。
- * @param lock_id 输入上一锁定索引，输出新的锁定索引。
- * @return 弹道解算成功时返回有效瞄准命令。
+ * @brief 轨迹规划专用瞄点选择。
+ *
+ * 该选择器不使用 tracker 当前绑定面的硬锁，而是在每个预测采样点重新选择
+ * 几何上最近的装甲板，使 MPC reference 能提前看到未来切板。
  */
-inline AimCommand ComputeAimCommand(const AimerConfig& cfg,
-                                    const PredictedTarget& target,
-                                    double bullet_speed, int& lock_id)
+inline AimPoint ChooseTrajectoryAimPoint(const AimerConfig& cfg,
+                                         const PredictedTarget& target,
+                                         int& lock_id)
+{
+  if (!target.msg.tracking)
+  {
+    lock_id = -1;
+    return {};
+  }
+
+  const auto armor_xyza_list = target.GetArmorXYZAList();
+  if (armor_xyza_list.empty())
+  {
+    lock_id = -1;
+    return {};
+  }
+
+  return ChooseNearestTrajectoryArmor(cfg, target, armor_xyza_list, lock_id);
+}
+
+/**
+ * @brief 由有效瞄准命令生成单发命中候选。
+ */
+inline AimerShotCandidate MakeShotCandidate(const AimPoint& aim_point, double yaw,
+                                            double pitch, double fly_time)
+{
+  AimerShotCandidate candidate;
+  if (!aim_point.valid)
+  {
+    return candidate;
+  }
+
+  candidate.valid = true;
+  candidate.face_shootable_at_hit = aim_point.shootable;
+  candidate.hit_face = aim_point.armor_index;
+  candidate.view_angle = aim_point.view_angle;
+  candidate.hit_xyza = aim_point.xyza;
+  candidate.yaw = yaw;
+  candidate.pitch = pitch;
+  candidate.fly_time = fly_time;
+  return candidate;
+}
+
+/**
+ * @brief 由有效瞄准命令生成单发命中候选。
+ */
+inline AimerShotCandidate MakeShotCandidate(const AimCommand& command)
+{
+  if (!command.valid)
+  {
+    return {};
+  }
+  return MakeShotCandidate(command.aim_point, command.yaw_pitch.x(),
+                           command.yaw_pitch.y(), command.fly_time);
+}
+
+/**
+ * @brief 根据已经选好的瞄点解算 yaw、pitch 和飞行时间。
+ */
+inline AimCommand BuildAimCommandFromAimPoint(const AimerConfig& cfg,
+                                             const AimPoint& aim_point,
+                                             double bullet_speed)
 {
   AimCommand command;
-  command.aim_point = ChooseAimPoint(cfg, target, lock_id);
+  command.aim_point = aim_point;
   if (!command.aim_point.valid)
   {
     return command;
@@ -442,5 +540,99 @@ inline AimCommand ComputeAimCommand(const AimerConfig& cfg,
       LimitRad(BearingYaw(xyz) + cfg.yaw_offset * DEG2RAD);
   command.yaw_pitch.y() = trajectory.pitch + cfg.pitch_offset * DEG2RAD;
   return command;
+}
+
+/**
+ * @brief 判断弹道射线是否需要穿过车体才能打到该装甲板。
+ */
+inline bool IsArmorOnVisibleSide(const PredictedTarget& target,
+                                 const Eigen::Vector4d& xyza)
+{
+  const Eigen::Vector2d center_to_camera(-target.msg.position.x(),
+                                         -target.msg.position.y());
+  const Eigen::Vector2d center_to_armor(
+      xyza.x() - target.msg.position.x(), xyza.y() - target.msg.position.y());
+  const double norm_product =
+      center_to_camera.norm() * center_to_armor.norm();
+  if (norm_product <= MIN_HORIZONTAL_DISTANCE_M)
+  {
+    return true;
+  }
+
+  return center_to_camera.dot(center_to_armor) > 0.0;
+}
+
+/**
+ * @brief 按给定枪线在所有物理装甲面中选择最可能命中的候选。
+ */
+inline AimerShotCandidate ChooseShotCandidateForCommand(
+    const AimerConfig& cfg, const PredictedTarget& target, double bullet_speed,
+    double command_yaw, double command_pitch)
+{
+  AimerShotCandidate best_candidate;
+  double best_error = std::numeric_limits<double>::max();
+
+  if (!target.msg.tracking)
+  {
+    return best_candidate;
+  }
+
+  const auto armor_xyza_list = target.GetArmorXYZAList();
+  for (int index = 0; index < static_cast<int>(armor_xyza_list.size()); ++index)
+  {
+    const auto& armor_xyza = armor_xyza_list[static_cast<std::size_t>(index)];
+    const double view_angle = ViewAngle(target.msg, armor_xyza);
+    if (!IsArmorFaceShootable(cfg, target.msg, view_angle) ||
+        !IsArmorOnVisibleSide(target, armor_xyza))
+    {
+      continue;
+    }
+
+    const AimPoint aim_point = BuildAimPoint(target, index, armor_xyza, true);
+    const AimCommand command =
+        BuildAimCommandFromAimPoint(cfg, aim_point, bullet_speed);
+    if (!command.valid)
+    {
+      continue;
+    }
+
+    const double error =
+        std::hypot(LimitRad(command.yaw_pitch.x() - command_yaw),
+                   command.yaw_pitch.y() - command_pitch);
+    if (error < best_error)
+    {
+      best_error = error;
+      best_candidate = MakeShotCandidate(command);
+    }
+  }
+
+  return best_candidate;
+}
+
+/**
+ * @brief 计算指向策略选中装甲板的 yaw、pitch 和飞行时间。
+ * @param cfg Aimer 运行时配置。
+ * @param target 预测后的 tracker 目标。
+ * @param bullet_speed 弹速，单位 m/s。
+ * @param lock_id 输入上一锁定索引，输出新的锁定索引。
+ * @return 弹道解算成功时返回有效瞄准命令。
+ */
+inline AimCommand ComputeAimCommand(const AimerConfig& cfg,
+                                    const PredictedTarget& target,
+                                    double bullet_speed, int& lock_id)
+{
+  return BuildAimCommandFromAimPoint(
+      cfg, ChooseAimPoint(cfg, target, lock_id), bullet_speed);
+}
+
+/**
+ * @brief 计算轨迹规划 reference 使用的 yaw、pitch 和飞行时间。
+ */
+inline AimCommand ComputeTrajectoryAimCommand(const AimerConfig& cfg,
+                                             const PredictedTarget& target,
+                                             double bullet_speed, int& lock_id)
+{
+  return BuildAimCommandFromAimPoint(
+      cfg, ChooseTrajectoryAimPoint(cfg, target, lock_id), bullet_speed);
 }
 }  // namespace AimerDetail

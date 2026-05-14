@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <Eigen/Dense>
 
@@ -65,6 +66,21 @@ inline bool IsFiniteGimbalPlanSample(const GimbalPlanSample& sample)
 }
 
 /**
+ * @brief 计算开火判定采样点。
+ */
+inline int PlanFireIndex(const AimerConfig& cfg)
+{
+  int fire_offset =
+      static_cast<int>(std::llround(std::max(0.0, cfg.fire_delay_s) /
+                                    PLAN_DEFAULT_DT_S));
+  if (fire_offset == 0)
+  {
+    fire_offset = PLAN_SHOOT_OFFSET;
+  }
+  return std::min(PLAN_HORIZON - 1, PLAN_HALF_HORIZON + fire_offset);
+}
+
+/**
  * @brief 构建 TinyMPC 使用的 yaw/pitch 参考轨迹。
  * @param cfg Aimer 运行时配置。
  * @param target_msg 当前 tracker 目标。
@@ -73,21 +89,23 @@ inline bool IsFiniteGimbalPlanSample(const GimbalPlanSample& sample)
  * @param initial_lock_id 参考轨迹的初始锁定面索引。
  * @param trajectory 输出参考轨迹。
  * @param yaw0 输出 yaw 偏置，用于让轨迹数值保持局部。
+ * @param fire_target 输出开火采样点对应的预测目标状态。
  * @return 所有参考采样都能计算时返回 true。
  */
 inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
                                      const ArmorTrackerTarget& target_msg,
                                      double delay_time, double bullet_speed,
                                      int initial_lock_id,
-                                     PlanTrajectory& trajectory, double& yaw0)
+                                     PlanTrajectory& trajectory, double& yaw0,
+                                     PredictedTarget& fire_target)
 {
+  bool fire_target_ready = false;
   PredictedTarget center_target{target_msg};
   center_target.Predict(delay_time);
-  int reference_lock_id =
-      target_msg.face_switch_observed ? initial_lock_id : target_msg.tracked_face_index;
+  int reference_lock_id = initial_lock_id;
 
   const auto rough_aim =
-      ComputeAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
+      ComputeTrajectoryAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
   if (!rough_aim.valid)
   {
     return false;
@@ -95,7 +113,7 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
 
   center_target.Predict(rough_aim.fly_time);
   const auto center_aim =
-      ComputeAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
+      ComputeTrajectoryAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
   if (!center_aim.valid)
   {
     return false;
@@ -105,7 +123,7 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
   PredictedTarget moving_target = center_target;
   moving_target.Predict(-PLAN_DEFAULT_DT_S * (PLAN_HALF_HORIZON + 1));
   auto yaw_pitch_last =
-      ComputeAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
+      ComputeTrajectoryAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
   if (!yaw_pitch_last.valid)
   {
     return false;
@@ -113,17 +131,19 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
 
   moving_target.Predict(PLAN_DEFAULT_DT_S);
   auto yaw_pitch =
-      ComputeAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
+      ComputeTrajectoryAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
   if (!yaw_pitch.valid)
   {
     return false;
   }
 
+  const int fire_index = PlanFireIndex(cfg);
   for (int index = 0; index < PLAN_HORIZON; ++index)
   {
+    const PredictedTarget sample_target = moving_target;
     moving_target.Predict(PLAN_DEFAULT_DT_S);
     auto yaw_pitch_next =
-        ComputeAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
+        ComputeTrajectoryAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
     if (!yaw_pitch_next.valid)
     {
       return false;
@@ -137,12 +157,17 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
         (2.0 * PLAN_DEFAULT_DT_S);
     trajectory.col(index) << LimitRad(yaw_pitch.yaw_pitch.x() - yaw0), yaw_vel,
         yaw_pitch.yaw_pitch.y(), pitch_vel;
+    if (index == fire_index)
+    {
+      fire_target = sample_target;
+      fire_target_ready = true;
+    }
 
     yaw_pitch_last = yaw_pitch;
     yaw_pitch = yaw_pitch_next;
   }
 
-  return true;
+  return fire_target_ready;
 }
 }  // namespace AimerDetail
 
@@ -219,13 +244,13 @@ inline void AimerCore::ResetGimbalPlanHistory()
  * @brief 尝试求解并生成 TinyMPC 云台计划。
  * @param target_msg 当前 tracker 目标。
  * @param bullet_speed 弹速，单位 m/s。
- * @param fire 上游开火门控是否允许开火。
  * @return TinyMPC 产出有限计划时返回 true。
  */
 inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
                                           double delay_time, double bullet_speed,
-                                          bool fire)
+                                          AimerShotCandidate& fire_shot_candidate)
 {
+  fire_shot_candidate = {};
   if (!planner_ready_ || yaw_solver_ == nullptr || pitch_solver_ == nullptr)
   {
     return false;
@@ -233,8 +258,10 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
 
   AimerDetail::PlanTrajectory reference{};
   double yaw0 = 0.0;
+  AimerDetail::PredictedTarget fire_target{};
   if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg, delay_time,
-                                             bullet_speed, lock_id_, reference, yaw0))
+                                             bullet_speed, lock_id_, reference, yaw0,
+                                             fire_target))
   {
     return false;
   }
@@ -273,18 +300,25 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
     return false;
   }
 
-  const int fire_index =
-      std::min(AimerDetail::PLAN_HORIZON - 1,
-               AimerDetail::PLAN_HALF_HORIZON + AimerDetail::PLAN_SHOOT_OFFSET);
-  const double fire_plan_error = AimerDetail::YawPitchPlanError(
-      reference(0, fire_index), reference(2, fire_index),
-      yaw_solver_->work->x(0, fire_index),
-      pitch_solver_->work->x(0, fire_index));
+  const int fire_index = AimerDetail::PlanFireIndex(cfg_);
+  const double planned_fire_yaw = AimerDetail::LimitRad(
+      yaw_solver_->work->x(0, fire_index) + yaw0);
+  const double planned_fire_pitch = pitch_solver_->work->x(0, fire_index);
+  fire_shot_candidate = AimerDetail::ChooseShotCandidateForCommand(
+      cfg_, fire_target, bullet_speed, planned_fire_yaw, planned_fire_pitch);
+  const double shot_plan_error =
+      fire_shot_candidate.valid
+          ? AimerDetail::YawPitchPlanError(
+                fire_shot_candidate.yaw, fire_shot_candidate.pitch,
+                planned_fire_yaw, planned_fire_pitch)
+          : std::numeric_limits<double>::infinity();
 
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   gimbal_plan_msg_.control = true;
-  gimbal_plan_msg_.fire = fire && fire_plan_error < cfg_.mpc_fire_thresh;
+  gimbal_plan_msg_.fire = fire_shot_candidate.valid &&
+                           fire_shot_candidate.face_shootable_at_hit &&
+                           shot_plan_error < cfg_.mpc_fire_thresh;
   gimbal_plan_msg_.target_yaw = static_cast<float>(output.target_yaw);
   gimbal_plan_msg_.target_pitch = static_cast<float>(output.target_pitch);
   gimbal_plan_msg_.yaw = static_cast<float>(output.yaw);
@@ -301,18 +335,18 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
  * @brief 构建不经过 TinyMPC 平滑的直接 yaw/pitch 云台计划。
  * @param target_msg 当前 tracker 目标。
  * @param control 下级控制器是否应使用该命令。
- * @param fire 是否允许开火。
+ * @param fire_enabled 直接计划是否允许开火。
  * @param yaw 命令 yaw，单位 rad。
  * @param pitch 命令 pitch，单位 rad。
  */
 inline void AimerCore::BuildFiniteDifferenceGimbalPlan(
-    const ArmorTrackerTarget& target_msg, bool control, bool fire, double yaw,
-    double pitch)
+    const ArmorTrackerTarget& target_msg, bool control, bool fire_enabled,
+    double yaw, double pitch)
 {
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   gimbal_plan_msg_.control = control;
-  gimbal_plan_msg_.fire = fire;
+  gimbal_plan_msg_.fire = fire_enabled;
   last_plan_mpc_ = false;
 
   if (!control || !std::isfinite(yaw) || !std::isfinite(pitch))
@@ -331,25 +365,32 @@ inline void AimerCore::BuildFiniteDifferenceGimbalPlan(
  * @brief 优先选择 TinyMPC 计划，不可用时回退到直接命令输出。
  * @param target_msg 当前 tracker 目标。
  * @param control 下级控制器是否应使用该命令。
- * @param fire 是否允许开火。
  * @param yaw 命令 yaw，单位 rad。
  * @param pitch 命令 pitch，单位 rad。
  * @param bullet_speed 弹速，单位 m/s。
  */
 inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                       double delay_time, bool control, bool fire,
-                                       double yaw, double pitch, double bullet_speed)
+                                       double delay_time, bool control,
+                                       double yaw, double pitch, double bullet_speed,
+                                       const AimerShotCandidate& direct_shot_candidate,
+                                       AimerShotCandidate& fire_shot_candidate)
 {
+  fire_shot_candidate = direct_shot_candidate;
   if (!control)
   {
-    BuildFiniteDifferenceGimbalPlan(target_msg, false, fire, yaw, pitch);
+    BuildFiniteDifferenceGimbalPlan(target_msg, false, false, yaw, pitch);
     return;
   }
 
-  if (BuildMpcGimbalPlan(target_msg, delay_time, bullet_speed, fire))
+  if (BuildMpcGimbalPlan(target_msg, delay_time, bullet_speed,
+                         fire_shot_candidate))
   {
     return;
   }
 
-  BuildFiniteDifferenceGimbalPlan(target_msg, true, fire, yaw, pitch);
+  fire_shot_candidate = direct_shot_candidate;
+  BuildFiniteDifferenceGimbalPlan(
+      target_msg, true,
+      direct_shot_candidate.valid && direct_shot_candidate.face_shootable_at_hit,
+      yaw, pitch);
 }

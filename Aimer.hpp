@@ -200,6 +200,29 @@ struct AimerPreviewFrame
 };
 
 /**
+ * @brief 单发弹丸对应的未来命中候选。
+ */
+struct AimerShotCandidate
+{
+  /// 候选是否有效。
+  bool valid{false};
+  /// 命中时刻该装甲板姿态是否允许开火。
+  bool face_shootable_at_hit{false};
+  /// 命中时刻对应的物理装甲板索引。
+  int hit_face{-1};
+  /// 命中时刻装甲板相对整车中心方位的视角，单位 rad。
+  double view_angle{0.0};
+  /// 命中时刻装甲板中心 x、y、z 和装甲板 yaw。
+  Eigen::Vector4d hit_xyza{Eigen::Vector4d::Zero()};
+  /// 指向该命中候选的 yaw，单位 rad。
+  double yaw{0.0};
+  /// 指向该命中候选的机械 pitch/roll，单位 rad。
+  double pitch{0.0};
+  /// 命中候选对应的弹丸飞行时间，单位 s。
+  double fly_time{0.0};
+};
+
+/**
  * @brief 由 xrobot YAML 生成的 Aimer 运行时配置。
  */
 struct AimerConfig
@@ -336,8 +359,8 @@ class AimerCore : public LibXR::Application
   /**
    * @brief 根据计划命令稳定性和云台两轴对准情况评估自动开火门控。
    */
-  bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double selected_view_angle,
-                      bool candidate_fire, double yaw, double pitch);
+  bool ShouldAutoFire(const AimerShotCandidate& shot_candidate,
+                      bool plan_fire_enabled, double yaw, double pitch);
   /**
    * @brief 初始化 yaw 和 pitch TinyMPC 求解器。
    */
@@ -346,19 +369,22 @@ class AimerCore : public LibXR::Application
    * @brief 尝试为当前目标构建 TinyMPC 云台计划。
    */
   bool BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
-                          double delay_time, double bullet_speed, bool fire);
+                          double delay_time, double bullet_speed,
+                          AimerShotCandidate& fire_shot_candidate);
   /**
    * @brief 在 TinyMPC 关闭或不可用时构建直接 yaw/pitch 计划。
    */
   void BuildFiniteDifferenceGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                       bool control, bool fire, double yaw,
-                                       double pitch);
+                                       bool control, bool fire_enabled,
+                                       double yaw, double pitch);
   /**
    * @brief 在 TinyMPC 和直接云台计划之间选择。
    */
   void BuildGimbalPlan(const ArmorTrackerTarget& target_msg, double delay_time,
-                       bool control, bool fire, double yaw, double pitch,
-                       double bullet_speed);
+                       bool control, double yaw, double pitch,
+                       double bullet_speed,
+                       const AimerShotCandidate& direct_shot_candidate,
+                       AimerShotCandidate& fire_shot_candidate);
   /**
    * @brief 清理与上一目标相关的规划器状态。
    */
