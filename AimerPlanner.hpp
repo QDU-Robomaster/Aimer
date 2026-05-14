@@ -139,6 +139,7 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
   const int fire_index = PlanFireIndex(cfg);
   for (int index = 0; index < PLAN_HORIZON; ++index)
   {
+    const PredictedTarget sample_target = moving_target;
     moving_target.Predict(PLAN_DEFAULT_DT_S);
     auto yaw_pitch_next =
         ComputeTrajectoryAimCommand(cfg, moving_target, bullet_speed, reference_lock_id);
@@ -157,7 +158,7 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
         yaw_pitch.yaw_pitch.y(), pitch_vel;
     if (index == fire_index)
     {
-      fire_target = moving_target;
+      fire_target = sample_target;
       fire_target_ready = true;
     }
 
