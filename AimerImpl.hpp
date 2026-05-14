@@ -266,23 +266,16 @@ inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_ro
 
 /**
  * @brief 判断当前计划命令是否满足自动开火条件。
- * @param target_xyz tracker 输出 B 坐标系下的目标瞄点。
- * @param selected_view_angle 选中装甲板相对整车中心方位的视角。
- * @param candidate_fire 策略和 MPC 计划是否允许开火。
+ * @param shot_candidate 当前发射请求对应的未来命中候选。
+ * @param candidate_fire 策略、命中面和 MPC 计划是否允许开火。
  * @param yaw 命令 yaw，单位 rad。
  * @param pitch 命令机械 pitch/roll，单位 rad。
  * @return 所有开火门控通过时返回 true。
  */
-inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
-                                      double selected_view_angle,
+inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
                                       bool candidate_fire, double yaw,
                                       double pitch)
 {
-  const double yaw_threshold =
-      AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz, selected_view_angle);
-  const double pitch_threshold =
-      AimerDetail::DynamicPitchFireThreshold(cfg_, target_xyz);
-
   auto remember_command = [this, yaw, pitch]()
   {
     last_command_yaw_ = yaw;
@@ -290,7 +283,21 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
     has_last_command_ = true;
   };
 
-  if (!cfg_.auto_fire || !candidate_fire)
+  if (!shot_candidate.valid)
+  {
+    remember_command();
+    return false;
+  }
+
+  const Eigen::Vector3d target_xyz = shot_candidate.hit_xyza.head<3>();
+  const double yaw_threshold =
+      AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz,
+                                           shot_candidate.view_angle);
+  const double pitch_threshold =
+      AimerDetail::DynamicPitchFireThreshold(cfg_, target_xyz);
+
+  if (!cfg_.auto_fire || !candidate_fire ||
+      !shot_candidate.face_shootable_at_hit)
   {
     remember_command();
     return false;
@@ -449,11 +456,22 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
       AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
   const double pitch = trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD;
 
-  const bool candidate_fire = cfg_.auto_fire && aim_point.shootable;
-  BuildGimbalPlan(target_msg, delay_time, true, candidate_fire, yaw, pitch,
-                  bullet_speed);
+  AimerShotCandidate direct_shot_candidate;
+  direct_shot_candidate.valid = true;
+  direct_shot_candidate.face_shootable_at_hit = aim_point.shootable;
+  direct_shot_candidate.hit_face = aim_point.armor_index;
+  direct_shot_candidate.view_angle = aim_point.view_angle;
+  direct_shot_candidate.hit_xyza = aim_point.xyza;
+  direct_shot_candidate.yaw = yaw;
+  direct_shot_candidate.pitch = pitch;
+  direct_shot_candidate.fly_time = trajectory.fly_time;
+
+  AimerShotCandidate fire_shot_candidate = direct_shot_candidate;
+  BuildGimbalPlan(target_msg, delay_time, true, cfg_.auto_fire, yaw, pitch,
+                  bullet_speed, direct_shot_candidate, fire_shot_candidate);
+
   gimbal_plan_msg_.fire =
-      ShouldAutoFire(final_xyz, aim_point.view_angle, gimbal_plan_msg_.fire,
+      ShouldAutoFire(fire_shot_candidate, gimbal_plan_msg_.fire,
                      gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch);
   publish_outputs(bullet_speed);
 }
