@@ -27,13 +27,13 @@ constructor_args:
     max_fire_threshold: 0.05
     enable_mpc_plan: true
     mpc_fire_thresh: 0.05
-    max_yaw_acc: 100.0
-    q_yaw_pos: 50.0
-    q_yaw_vel: 1.0
+    max_yaw_acc: 50.0
+    q_yaw_pos: 9000000.0
+    q_yaw_vel: 0.0
     r_yaw_acc: 1.0
     max_pitch_acc: 100.0
-    q_pitch_pos: 50.0
-    q_pitch_vel: 1.0
+    q_pitch_pos: 9000000.0
+    q_pitch_vel: 0.0
     r_pitch_acc: 1.0
     preview:
       enabled: false
@@ -236,22 +236,22 @@ struct AimerConfig
     double max_fire_threshold{0.05};
     /// 是否启用 TinyMPC 云台计划。
     bool enable_mpc_plan{true};
-    /// 允许开火的最大 MPC 跟踪误差，单位 rad。
+    /// 允许使用 MPC 输出和开火的最大计划偏离，单位 rad。
     double mpc_fire_thresh{0.05};
     /// TinyMPC yaw 加速度约束，单位 rad/s^2。
-    double max_yaw_acc{100.0};
+    double max_yaw_acc{50.0};
     /// TinyMPC yaw 位置代价。
-    double q_yaw_pos{50.0};
+    double q_yaw_pos{9000000.0};
     /// TinyMPC yaw 速度代价。
-    double q_yaw_vel{1.0};
+    double q_yaw_vel{0.0};
     /// TinyMPC yaw 加速度代价。
     double r_yaw_acc{1.0};
     /// TinyMPC pitch 加速度约束，单位 rad/s^2。
     double max_pitch_acc{100.0};
     /// TinyMPC pitch 位置代价。
-    double q_pitch_pos{50.0};
+    double q_pitch_pos{9000000.0};
     /// TinyMPC pitch 速度代价。
-    double q_pitch_vel{1.0};
+    double q_pitch_vel{0.0};
     /// TinyMPC pitch 加速度代价。
     double r_pitch_acc{1.0};
     /// Aimer 内置实时预览运行参数。
@@ -326,10 +326,10 @@ class AimerCore : public LibXR::Application
    */
   void PublishPreviewState(const AimerPreviewFrame& state);
   /**
-   * @brief 根据命令稳定性和云台对准情况评估自动开火门控。
+   * @brief 根据计划命令稳定性和云台两轴对准情况评估自动开火门控。
    */
   bool ShouldAutoFire(const Eigen::Vector3d& target_xyz, double selected_view_angle,
-                      bool shootable, double yaw);
+                      bool candidate_fire, double yaw, double pitch);
   /**
    * @brief 初始化 yaw 和 pitch TinyMPC 求解器。
    */
@@ -363,6 +363,7 @@ class AimerCore : public LibXR::Application
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
   bool has_last_command_{false};
   double last_command_yaw_{0.0};
+  double last_command_pitch_{0.0};
   bool has_gimbal_rotation_{false};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};

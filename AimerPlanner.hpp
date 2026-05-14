@@ -29,6 +29,42 @@ inline constexpr int PLAN_SHOOT_OFFSET = 2;
 using PlanTrajectory = Eigen::Matrix<double, 4, PLAN_HORIZON>;
 
 /**
+ * @brief 一帧 MPC 计划输出。
+ */
+struct GimbalPlanSample
+{
+  double target_yaw{0.0};
+  double target_pitch{0.0};
+  double yaw{0.0};
+  double yaw_vel{0.0};
+  double yaw_acc{0.0};
+  double pitch{0.0};
+  double pitch_vel{0.0};
+  double pitch_acc{0.0};
+};
+
+/**
+ * @brief 计算 yaw/pitch 两轴计划偏差。
+ */
+inline double YawPitchPlanError(double reference_yaw, double reference_pitch,
+                                double planned_yaw, double planned_pitch)
+{
+  return std::hypot(LimitRad(reference_yaw - planned_yaw),
+                    reference_pitch - planned_pitch);
+}
+
+/**
+ * @brief 检查 MPC 输出是否为有限值。
+ */
+inline bool IsFiniteGimbalPlanSample(const GimbalPlanSample& sample)
+{
+  return std::isfinite(sample.target_yaw) && std::isfinite(sample.target_pitch) &&
+         std::isfinite(sample.yaw) && std::isfinite(sample.yaw_vel) &&
+         std::isfinite(sample.yaw_acc) && std::isfinite(sample.pitch) &&
+         std::isfinite(sample.pitch_vel) && std::isfinite(sample.pitch_acc);
+}
+
+/**
  * @brief 构建 TinyMPC 使用的 yaw/pitch 参考轨迹。
  * @param cfg Aimer 运行时配置。
  * @param target_msg 当前 tracker 目标。
@@ -187,8 +223,8 @@ inline void AimerCore::ResetGimbalPlanHistory()
  * @return TinyMPC 产出有限计划时返回 true。
  */
 inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                      double delay_time, double bullet_speed,
-                                      bool fire)
+                                          double delay_time, double bullet_speed,
+                                          bool fire)
 {
   if (!planner_ready_ || yaw_solver_ == nullptr || pitch_solver_ == nullptr)
   {
@@ -215,21 +251,24 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   tiny_solve(pitch_solver_);
 
   const int output_index = AimerDetail::PLAN_HALF_HORIZON;
-  const double target_yaw =
-      AimerDetail::LimitRad(reference(0, output_index) + yaw0);
-  const double target_pitch = reference(2, output_index);
-  const double planned_yaw =
-      AimerDetail::LimitRad(yaw_solver_->work->x(0, output_index) + yaw0);
-  const double planned_yaw_vel = yaw_solver_->work->x(1, output_index);
-  const double planned_yaw_acc = yaw_solver_->work->u(0, output_index);
-  const double planned_pitch = pitch_solver_->work->x(0, output_index);
-  const double planned_pitch_vel = pitch_solver_->work->x(1, output_index);
-  const double planned_pitch_acc = pitch_solver_->work->u(0, output_index);
+  AimerDetail::GimbalPlanSample output{};
+  output.target_yaw = AimerDetail::LimitRad(reference(0, output_index) + yaw0);
+  output.target_pitch = reference(2, output_index);
+  output.yaw = AimerDetail::LimitRad(yaw_solver_->work->x(0, output_index) + yaw0);
+  output.yaw_vel = yaw_solver_->work->x(1, output_index);
+  output.yaw_acc = yaw_solver_->work->u(0, output_index);
+  output.pitch = pitch_solver_->work->x(0, output_index);
+  output.pitch_vel = pitch_solver_->work->x(1, output_index);
+  output.pitch_acc = pitch_solver_->work->u(0, output_index);
 
-  if (!std::isfinite(target_yaw) || !std::isfinite(target_pitch) ||
-      !std::isfinite(planned_yaw) || !std::isfinite(planned_yaw_vel) ||
-      !std::isfinite(planned_yaw_acc) || !std::isfinite(planned_pitch) ||
-      !std::isfinite(planned_pitch_vel) || !std::isfinite(planned_pitch_acc))
+  if (!AimerDetail::IsFiniteGimbalPlanSample(output))
+  {
+    return false;
+  }
+
+  const double output_plan_error = AimerDetail::YawPitchPlanError(
+      output.target_yaw, output.target_pitch, output.yaw, output.pitch);
+  if (output_plan_error > cfg_.mpc_fire_thresh)
   {
     return false;
   }
@@ -237,22 +276,23 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   const int fire_index =
       std::min(AimerDetail::PLAN_HORIZON - 1,
                AimerDetail::PLAN_HALF_HORIZON + AimerDetail::PLAN_SHOOT_OFFSET);
-  const double plan_error =
-      std::hypot(reference(0, fire_index) - yaw_solver_->work->x(0, fire_index),
-                 reference(2, fire_index) - pitch_solver_->work->x(0, fire_index));
+  const double fire_plan_error = AimerDetail::YawPitchPlanError(
+      reference(0, fire_index), reference(2, fire_index),
+      yaw_solver_->work->x(0, fire_index),
+      pitch_solver_->work->x(0, fire_index));
 
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   gimbal_plan_msg_.control = true;
-  gimbal_plan_msg_.fire = fire && plan_error < cfg_.mpc_fire_thresh;
-  gimbal_plan_msg_.target_yaw = static_cast<float>(target_yaw);
-  gimbal_plan_msg_.target_pitch = static_cast<float>(target_pitch);
-  gimbal_plan_msg_.yaw = static_cast<float>(planned_yaw);
-  gimbal_plan_msg_.yaw_vel = static_cast<float>(planned_yaw_vel);
-  gimbal_plan_msg_.yaw_acc = static_cast<float>(planned_yaw_acc);
-  gimbal_plan_msg_.pitch = static_cast<float>(planned_pitch);
-  gimbal_plan_msg_.pitch_vel = static_cast<float>(planned_pitch_vel);
-  gimbal_plan_msg_.pitch_acc = static_cast<float>(planned_pitch_acc);
+  gimbal_plan_msg_.fire = fire && fire_plan_error < cfg_.mpc_fire_thresh;
+  gimbal_plan_msg_.target_yaw = static_cast<float>(output.target_yaw);
+  gimbal_plan_msg_.target_pitch = static_cast<float>(output.target_pitch);
+  gimbal_plan_msg_.yaw = static_cast<float>(output.yaw);
+  gimbal_plan_msg_.yaw_vel = static_cast<float>(output.yaw_vel);
+  gimbal_plan_msg_.yaw_acc = static_cast<float>(output.yaw_acc);
+  gimbal_plan_msg_.pitch = static_cast<float>(output.pitch);
+  gimbal_plan_msg_.pitch_vel = static_cast<float>(output.pitch_vel);
+  gimbal_plan_msg_.pitch_acc = static_cast<float>(output.pitch_acc);
   last_plan_mpc_ = true;
   return true;
 }
@@ -297,8 +337,8 @@ inline void AimerCore::BuildFiniteDifferenceGimbalPlan(
  * @param bullet_speed 弹速，单位 m/s。
  */
 inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                   double delay_time, bool control, bool fire,
-                                   double yaw, double pitch, double bullet_speed)
+                                       double delay_time, bool control, bool fire,
+                                       double yaw, double pitch, double bullet_speed)
 {
   if (!control)
   {

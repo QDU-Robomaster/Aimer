@@ -102,7 +102,7 @@ struct TrajectorySolution
 /**
  * @brief 为选中装甲板计算动态 yaw 开火阈值。
  * @param cfg Aimer 运行时配置。
- * @param target_xyz tracker 相机坐标系下的选中瞄点。
+ * @param target_xyz tracker 输出 B 坐标系下的选中瞄点。
  * @param selected_view_angle 装甲板相对整车中心方位的视角。
  * @return yaw 阈值，单位 rad。
  */
@@ -118,6 +118,23 @@ inline double DynamicYawFireThreshold(const AimerConfig& cfg,
       std::atan2(0.5 * SMALL_ARMOR_WIDTH_M * facing_scale, horizontal_distance);
   const double spread_yaw = std::atan2(FIRE_BULLET_SPREAD_M, horizontal_distance);
   return std::clamp(yaw_half - spread_yaw, cfg.min_fire_threshold,
+                    cfg.max_fire_threshold);
+}
+
+/**
+ * @brief 为选中装甲板计算动态 pitch/roll 开火阈值。
+ * @param cfg Aimer 运行时配置。
+ * @param target_xyz tracker 输出 B 坐标系下的选中瞄点。
+ * @return pitch/roll 阈值，单位 rad。
+ */
+inline double DynamicPitchFireThreshold(const AimerConfig& cfg,
+                                        const Eigen::Vector3d& target_xyz)
+{
+  const double horizontal_distance =
+      std::max(MIN_HORIZONTAL_DISTANCE_M, HorizontalDistance(target_xyz));
+  const double pitch_half = std::atan2(0.5 * ARMOR_HEIGHT_M, horizontal_distance);
+  const double spread_pitch = std::atan2(FIRE_BULLET_SPREAD_M, horizontal_distance);
+  return std::clamp(pitch_half - spread_pitch, cfg.min_fire_threshold,
                     cfg.max_fire_threshold);
 }
 

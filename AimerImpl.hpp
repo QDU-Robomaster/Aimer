@@ -5,8 +5,8 @@
  * @brief Aimer 模块的内联运行时实现。
  */
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -243,27 +243,32 @@ inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_ro
 }
 
 /**
- * @brief 判断当前命令是否满足自动开火条件。
- * @param target_xyz tracker 相机坐标系下的目标瞄点。
+ * @brief 判断当前计划命令是否满足自动开火条件。
+ * @param target_xyz tracker 输出 B 坐标系下的目标瞄点。
  * @param selected_view_angle 选中装甲板相对整车中心方位的视角。
- * @param shootable 当前策略是否允许打该装甲板。
+ * @param candidate_fire 策略和 MPC 计划是否允许开火。
  * @param yaw 命令 yaw，单位 rad。
+ * @param pitch 命令机械 pitch/roll，单位 rad。
  * @return 所有开火门控通过时返回 true。
  */
 inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
-                                  double selected_view_angle, bool shootable,
-                                  double yaw)
+                                      double selected_view_angle,
+                                      bool candidate_fire, double yaw,
+                                      double pitch)
 {
   const double yaw_threshold =
       AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz, selected_view_angle);
+  const double pitch_threshold =
+      AimerDetail::DynamicPitchFireThreshold(cfg_, target_xyz);
 
-  auto remember_command = [this, yaw]()
+  auto remember_command = [this, yaw, pitch]()
   {
     last_command_yaw_ = yaw;
+    last_command_pitch_ = pitch;
     has_last_command_ = true;
   };
 
-  if (!cfg_.auto_fire || !shootable)
+  if (!cfg_.auto_fire || !candidate_fire)
   {
     remember_command();
     return false;
@@ -283,6 +288,7 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
   }
 
   const auto gimbal_euler = gimbal_rotation.ToEulerAngleZYX();
+  const double gimbal_pitch = gimbal_euler[0];
   const double gimbal_yaw = gimbal_euler[2];
 
   if (!has_last_command_)
@@ -293,10 +299,16 @@ inline bool AimerCore::ShouldAutoFire(const Eigen::Vector3d& target_xyz,
 
   const double command_error_yaw =
       std::abs(AimerDetail::LimitRad(last_command_yaw_ - yaw));
+  const double command_error_pitch =
+      std::abs(AimerDetail::LimitRad(last_command_pitch_ - pitch));
   const double gimbal_error_yaw = std::abs(AimerDetail::LimitRad(gimbal_yaw - yaw));
+  const double gimbal_error_pitch =
+      std::abs(AimerDetail::LimitRad(gimbal_pitch - pitch));
 
-  const bool command_stable = command_error_yaw < yaw_threshold * 2.0;
-  const bool gimbal_aligned = gimbal_error_yaw < yaw_threshold;
+  const bool command_stable = command_error_yaw < yaw_threshold * 2.0 &&
+                              command_error_pitch < pitch_threshold * 2.0;
+  const bool gimbal_aligned = gimbal_error_yaw < yaw_threshold &&
+                              gimbal_error_pitch < pitch_threshold;
 
   remember_command();
   return command_stable && gimbal_aligned;
@@ -415,8 +427,11 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
       AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
   const double pitch = trajectory.pitch + cfg_.pitch_offset * AimerDetail::DEG2RAD;
 
-  const bool raw_fire =
-      ShouldAutoFire(final_xyz, aim_point.view_angle, aim_point.shootable, yaw);
-  BuildGimbalPlan(target_msg, delay_time, true, raw_fire, yaw, pitch, bullet_speed);
+  const bool candidate_fire = cfg_.auto_fire && aim_point.shootable;
+  BuildGimbalPlan(target_msg, delay_time, true, candidate_fire, yaw, pitch,
+                  bullet_speed);
+  gimbal_plan_msg_.fire =
+      ShouldAutoFire(final_xyz, aim_point.view_angle, gimbal_plan_msg_.fire,
+                     gimbal_plan_msg_.yaw, gimbal_plan_msg_.pitch);
   publish_outputs(bullet_speed);
 }
