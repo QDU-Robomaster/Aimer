@@ -15,6 +15,11 @@ constructor_args:
     yaw_rate_threshold: 2.0
     default_bullet_speed: 23.0
     min_valid_bullet_speed: 14.0
+    ballistic_drag_k: 0.02
+    ballistic_integration_dt_s: 0.001
+    ballistic_max_iterations: 16
+    ballistic_min_elevation_deg: -20.0
+    ballistic_max_elevation_deg: 35.0
     auto_fire: true
     image_to_now_s: 0.0
     vision_to_command_delay_s: 0.0
@@ -237,6 +242,16 @@ struct AimerConfig
     double default_bullet_speed{23.0};
     /// 可接受的最小裁判系统弹速，单位 m/s。
     double min_valid_bullet_speed{14.0};
+    /// 二次阻力加速度系数，a_drag = -k * |v| * v。
+    double ballistic_drag_k{0.02};
+    /// RK4 弹道积分步长，单位 s。
+    double ballistic_integration_dt_s{0.001};
+    /// 一维括区求根最大迭代次数。
+    int ballistic_max_iterations{16};
+    /// 允许搜索的最小弹道仰角，单位 deg。
+    double ballistic_min_elevation_deg{-20.0};
+    /// 允许搜索的最大弹道仰角，单位 deg。
+    double ballistic_max_elevation_deg{35.0};
     /// 是否启用基于实测云台姿态的自动开火门控。
     bool auto_fire{true};
     /// 从图像曝光到当前处理时刻的估计延迟。

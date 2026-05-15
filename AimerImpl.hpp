@@ -418,7 +418,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   const Eigen::Vector3d first_xyz = aim_point.xyza.head<3>();
   const double first_horizontal_distance = AimerDetail::HorizontalDistance(first_xyz);
   const auto first_trajectory = AimerDetail::SolveTrajectoryElevation(
-      bullet_speed, first_horizontal_distance, AimerDetail::BallisticHeight(first_xyz));
+      bullet_speed, first_horizontal_distance, AimerDetail::BallisticHeight(first_xyz),
+      cfg_.ballistic_drag_k, cfg_.ballistic_integration_dt_s,
+      cfg_.ballistic_max_iterations, cfg_.ballistic_min_elevation_deg,
+      cfg_.ballistic_max_elevation_deg);
   if (first_trajectory.unsolvable)
   {
     ResetGimbalPlanHistory();
@@ -439,7 +442,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   const Eigen::Vector3d hit_xyz = aim_point.xyza.head<3>();
   const double hit_horizontal_distance = AimerDetail::HorizontalDistance(hit_xyz);
   const auto trajectory = AimerDetail::SolveTrajectoryElevation(
-      bullet_speed, hit_horizontal_distance, AimerDetail::BallisticHeight(hit_xyz));
+      bullet_speed, hit_horizontal_distance, AimerDetail::BallisticHeight(hit_xyz),
+      cfg_.ballistic_drag_k, cfg_.ballistic_integration_dt_s,
+      cfg_.ballistic_max_iterations, cfg_.ballistic_min_elevation_deg,
+      cfg_.ballistic_max_elevation_deg);
   if (trajectory.unsolvable)
   {
     ResetGimbalPlanHistory();

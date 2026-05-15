@@ -526,8 +526,11 @@ inline AimCommand BuildAimCommandFromAimPoint(const AimerConfig& cfg,
 
   const Eigen::Vector3d xyz = command.aim_point.xyza.head<3>();
   const double horizontal_distance = HorizontalDistance(xyz);
-  const auto trajectory =
-      SolveTrajectoryElevation(bullet_speed, horizontal_distance, BallisticHeight(xyz));
+  const auto trajectory = SolveTrajectoryElevation(
+      bullet_speed, horizontal_distance, BallisticHeight(xyz),
+      cfg.ballistic_drag_k, cfg.ballistic_integration_dt_s,
+      cfg.ballistic_max_iterations, cfg.ballistic_min_elevation_deg,
+      cfg.ballistic_max_elevation_deg);
   if (trajectory.unsolvable)
   {
     return command;

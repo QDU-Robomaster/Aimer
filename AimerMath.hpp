@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 #include <Eigen/Dense>
 
@@ -21,6 +22,11 @@ inline constexpr double DEG2RAD = PI / 180.0;
 inline constexpr double GRAVITY = 9.7833;
 /// 避免弹道方程奇异的最小水平距离。
 inline constexpr double MIN_HORIZONTAL_DISTANCE_M = 1e-4;
+/// RK4 弹道积分步长夹紧范围，避免配置错误造成过慢或数值过粗。
+inline constexpr double MIN_BALLISTIC_DT_S = 1e-4;
+inline constexpr double MAX_BALLISTIC_DT_S = 0.02;
+/// 弹道仿真的最大飞行时间，超过视为不可解。
+inline constexpr double MAX_BALLISTIC_FLIGHT_TIME_S = 3.0;
 /// RoboMaster 小装甲板规则宽度，单位 m。
 inline constexpr double SMALL_ARMOR_WIDTH_M = 0.135;
 /// RoboMaster 装甲板规则高度，单位 m。
@@ -87,7 +93,7 @@ inline double BallisticHeight(const Eigen::MatrixBase<Derived>& point)
 }
 
 /**
- * @brief 闭式弹道仰角解算结果。
+ * @brief 弹道仰角解算结果。
  */
 struct TrajectorySolution
 {
@@ -97,6 +103,13 @@ struct TrajectorySolution
   double fly_time{0.0};
   /// 加配置 roll 轴偏置前的发射仰角，单位 rad。
   double elevation{0.0};
+};
+
+struct BallisticSample
+{
+  bool valid{false};
+  double height{0.0};
+  double fly_time{0.0};
 };
 
 /**
@@ -139,7 +152,75 @@ inline double DynamicRollFireThreshold(const AimerConfig& cfg,
 }
 
 /**
- * @brief 解算低抛弹道仰角和飞行时间。
+ * @brief 二次阻力弹道状态导数。
+ */
+inline Eigen::Vector4d BallisticDerivative(const Eigen::Vector4d& state,
+                                           double drag_k)
+{
+  const double vx = state[2];
+  const double vz = state[3];
+  const double speed = std::hypot(vx, vz);
+  Eigen::Vector4d derivative{};
+  derivative[0] = vx;
+  derivative[1] = vz;
+  derivative[2] = -drag_k * speed * vx;
+  derivative[3] = -GRAVITY - drag_k * speed * vz;
+  return derivative;
+}
+
+inline BallisticSample SimulateQuadraticDragTrajectory(
+    double bullet_speed, double horizontal_distance, double elevation,
+    double drag_k, double integration_dt_s)
+{
+  BallisticSample sample{};
+  if (bullet_speed <= 0.0 || horizontal_distance <= MIN_HORIZONTAL_DISTANCE_M)
+  {
+    return sample;
+  }
+
+  const double dt =
+      std::clamp(integration_dt_s, MIN_BALLISTIC_DT_S, MAX_BALLISTIC_DT_S);
+  const double k = std::max(0.0, drag_k);
+  Eigen::Vector4d state;
+  state << 0.0, 0.0, bullet_speed * std::cos(elevation),
+      bullet_speed * std::sin(elevation);
+
+  double time = 0.0;
+  while (time < MAX_BALLISTIC_FLIGHT_TIME_S)
+  {
+    const Eigen::Vector4d previous = state;
+    const double previous_time = time;
+    const Eigen::Vector4d k1 = BallisticDerivative(state, k);
+    const Eigen::Vector4d k2 = BallisticDerivative(state + 0.5 * dt * k1, k);
+    const Eigen::Vector4d k3 = BallisticDerivative(state + 0.5 * dt * k2, k);
+    const Eigen::Vector4d k4 = BallisticDerivative(state + dt * k3, k);
+    state += (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    time += dt;
+
+    if (!state.allFinite() || state[2] <= 0.0)
+    {
+      return sample;
+    }
+
+    if (state[0] >= horizontal_distance)
+    {
+      const double dx = state[0] - previous[0];
+      const double ratio =
+          dx > 1e-9 ? (horizontal_distance - previous[0]) / dx : 0.0;
+      const double clamped_ratio = std::clamp(ratio, 0.0, 1.0);
+      sample.valid = true;
+      sample.height =
+          previous[1] + clamped_ratio * (state[1] - previous[1]);
+      sample.fly_time = previous_time + clamped_ratio * dt;
+      return sample;
+    }
+  }
+
+  return sample;
+}
+
+/**
+ * @brief 解算二次阻力低抛弹道仰角和飞行时间。
  * @param bullet_speed 弹速，单位 m/s。
  * @param horizontal_distance tracker x-y 平面距离，单位 m。
  * @param target_height tracker z 方向目标高度，单位 m。
@@ -147,40 +228,87 @@ inline double DynamicRollFireThreshold(const AimerConfig& cfg,
  */
 inline TrajectorySolution SolveTrajectoryElevation(double bullet_speed,
                                                    double horizontal_distance,
-                                                   double target_height)
+                                                   double target_height,
+                                                   double drag_k,
+                                                   double integration_dt_s,
+                                                   int max_iterations,
+                                                   double min_elevation_deg,
+                                                   double max_elevation_deg)
 {
   TrajectorySolution solution;
-
   if (bullet_speed <= 0.0 || horizontal_distance <= MIN_HORIZONTAL_DISTANCE_M)
   {
     solution.unsolvable = true;
     return solution;
   }
 
-  const double a = GRAVITY * horizontal_distance * horizontal_distance /
-                   (2.0 * bullet_speed * bullet_speed);
-  const double b = -horizontal_distance;
-  const double c = a + target_height;
-  const double delta = b * b - 4.0 * a * c;
+  double elevation_min = min_elevation_deg * DEG2RAD;
+  double elevation_max = max_elevation_deg * DEG2RAD;
+  if (elevation_min > elevation_max)
+  {
+    std::swap(elevation_min, elevation_max);
+  }
 
-  if (delta < 0.0)
+  auto residual = [&](double elevation, BallisticSample* output = nullptr) {
+    const BallisticSample sample = SimulateQuadraticDragTrajectory(
+        bullet_speed, horizontal_distance, elevation, drag_k, integration_dt_s);
+    if (output != nullptr)
+    {
+      *output = sample;
+    }
+    return sample.valid ? sample.height - target_height
+                        : std::numeric_limits<double>::quiet_NaN();
+  };
+
+  BallisticSample low_sample;
+  BallisticSample high_sample;
+  double f_low = residual(elevation_min, &low_sample);
+  const double f_high = residual(elevation_max, &high_sample);
+  if (!std::isfinite(f_low) || !std::isfinite(f_high) ||
+      f_low * f_high > 0.0)
   {
     solution.unsolvable = true;
     return solution;
   }
 
-  const double tan_elevation_1 = (-b + std::sqrt(delta)) / (2.0 * a);
-  const double tan_elevation_2 = (-b - std::sqrt(delta)) / (2.0 * a);
-  const double elevation_1 = std::atan(tan_elevation_1);
-  const double elevation_2 = std::atan(tan_elevation_2);
-  const double fly_time_1 =
-      horizontal_distance / (bullet_speed * std::cos(elevation_1));
-  const double fly_time_2 =
-      horizontal_distance / (bullet_speed * std::cos(elevation_2));
+  BallisticSample mid_sample{};
+  double elevation_mid = 0.5 * (elevation_min + elevation_max);
+  const int iterations = std::clamp(max_iterations, 4, 64);
+  for (int i = 0; i < iterations; ++i)
+  {
+    elevation_mid = 0.5 * (elevation_min + elevation_max);
+    const double f_mid = residual(elevation_mid, &mid_sample);
+    if (!std::isfinite(f_mid))
+    {
+      solution.unsolvable = true;
+      return solution;
+    }
+    if (std::abs(f_mid) < 1e-4)
+    {
+      break;
+    }
+    if (f_low * f_mid <= 0.0)
+    {
+      elevation_max = elevation_mid;
+    }
+    else
+    {
+      elevation_min = elevation_mid;
+      f_low = f_mid;
+    }
+  }
+
+  elevation_mid = 0.5 * (elevation_min + elevation_max);
+  const double f_mid = residual(elevation_mid, &mid_sample);
+  if (!std::isfinite(f_mid))
+  {
+    solution.unsolvable = true;
+    return solution;
+  }
 
   solution.unsolvable = false;
-  solution.elevation = (fly_time_1 < fly_time_2) ? elevation_1 : elevation_2;
-  solution.fly_time = (fly_time_1 < fly_time_2) ? fly_time_1 : fly_time_2;
+  solution.elevation = elevation_mid;
+  solution.fly_time = mid_sample.fly_time;
   return solution;
 }
 }  // namespace AimerDetail
