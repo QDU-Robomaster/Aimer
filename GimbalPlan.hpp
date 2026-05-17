@@ -2,7 +2,7 @@
 
 /**
  * @file GimbalPlan.hpp
- * @brief Aimer 内部云台计划命令载荷。
+ * @brief Aimer 内部云台计划命令数据。
  */
 
 #ifndef QDU_GIMBAL_PLAN_HPP
@@ -17,7 +17,7 @@ struct GimbalPlan
 {
   /// 来源 tracker 帧时间戳，单位 us。
   uint64_t image_timestamp_us{0};
-  /// 下级控制器是否应使用该命令。
+  /// 下位机控制器是否应使用该命令。
   bool control{false};
   /// 当前命令点是否允许继续进入最终开火门控。
   bool fire{false};

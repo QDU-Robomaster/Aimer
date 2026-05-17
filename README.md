@@ -9,9 +9,9 @@ DevC 云台目标和发射许可。控制逻辑只使用 tracker 目标状态；
 
 - 输入 `tracker/target_frame`：`ArmorTracker` 发布的同源目标帧，包含
   `ArmorTrackerTarget` 和 detector 源图像/IMU。
-- 输入 `host/robot_game_ref`：完整裁判摘要，载荷为 Aimer 本地定义的 31 字节 `AimerRefereeSummary`，用于更新反馈弹速并记录热量上限和冷却值；异常或过低时回退到默认弹速。
+- 输入 `host/robot_game_ref`：完整裁判摘要，数据类型为 Aimer 本地定义的 31 字节 `AimerRefereeSummary`，用于更新反馈弹速并记录热量上限和冷却值；异常或过低时回退到默认弹速。
 - 输入 `host/gimbal_quat`：C 板回传的云台当前姿态，只用于自动开火判定。
-- 输出 `host/target_euler`：DevC `HostData` 接收的云台目标，载荷为角度、角速度和角加速度前馈；机械俯仰轴使用 roll 字段。
+- 输出 `host/target_euler`：DevC `HostData` 接收的云台目标，包含角度、角速度和角加速度前馈；机械俯仰轴使用 roll 字段。
 - 输出 `host/fire_notify`：DevC `LauncherCMD` 接收的发射许可，值与最终云台计划开火门控保持一致。
 
 坐标约定：`ArmorTrackerTarget` 使用右手系，`x` 向右、`y` 向前、`z` 向上。
@@ -48,9 +48,9 @@ Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，
 
 - tracker 整车几何展开后的装甲面轮廓。
 - 白色目标中心十字。
-- 红色预测瞄点投影；开火状态下额外画红圈。
+- 红色预测瞄点投影；开火状态下画红圈。
 
-预览不会订阅原始图像、detector 结果或 host 输出，也不会输出额外调试 topic。
+预览不会订阅原始图像、detector 结果或 host 输出，也不会输出调试 topic。
 
 在 BSP 里只实例化 `Aimer`，不要单独实例化 `AimerPreview`。开启方式是给
 `Aimer` 配置相机模板参数和 `cfg.preview`：
@@ -68,10 +68,9 @@ Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，
         web_stream_name: aimer_preview
 ```
 
-## 边界
+## 职责
 
 - Aimer 不负责目标跟踪，也不修改同步链路。
-- Aimer 直接发布 DevC 接口的 `host/target_euler` 和 `host/fire_notify`；不需要额外 bridge 模块。
-- Aimer 不依赖旧版跳变标志、额外序号或历史 delay 字段，当前输入以
-  `ArmorTrackerTarget` 字段和显式 `*_extra_predict_s` 延迟配置为准。
+- Aimer 直接发布 DevC 接口的 `host/target_euler` 和 `host/fire_notify`。
+- Aimer 的输入以 `ArmorTrackerTarget` 字段和显式预测延迟配置为准。
 - 运行日志不参与控制闭环；热量反馈缺失时不会伪造当前热量。

@@ -2,7 +2,7 @@
 
 /**
  * @file Aimer.hpp
- * @brief Aimer 模块的公开接口和 topic 载荷声明。
+ * @brief Aimer 模块的公开接口和 topic 数据声明。
  */
 
 // clang-format off
@@ -127,7 +127,7 @@ struct [[gnu::packed]] AimerRefereeLauncherData
 };
 
 /**
- * @brief host/robot_game_ref 的完整 31 字节裁判系统摘要载荷。
+ * @brief host/robot_game_ref 的完整 31 字节裁判系统摘要数据。
  */
 struct [[gnu::packed]] AimerRefereeSummary
 {
@@ -142,25 +142,25 @@ static_assert(sizeof(AimerRefereeLauncherData) == 7);
 static_assert(sizeof(AimerRefereeSummary) == 31);
 
 /**
- * @brief DevC HostData 接收的云台目标载荷。
+ * @brief DevC HostData 接收的云台目标数据。
  */
 struct AimerHostGimbalTarget
 {
   /// 机械俯仰轴 roll 命令，单位 rad。
   float rol{0.0f};
-  /// pitch 字段保留为 ABI 对齐，当前不承载俯仰命令。
+  /// pitch 字段保留用于匹配 DevC HostData 布局，当前不承载俯仰命令。
   float pit{0.0f};
   /// yaw 命令，单位 rad。
   float yaw{0.0f};
   /// 机械俯仰轴 roll 速度前馈，单位 rad/s。
   float rol_dot{0.0f};
-  /// pitch 速度字段保留为 ABI 对齐。
+  /// pitch 速度字段保留用于匹配 DevC HostData 布局。
   float pit_dot{0.0f};
   /// yaw 速度前馈，单位 rad/s。
   float yaw_dot{0.0f};
   /// 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
   float rol_ddot{0.0f};
-  /// pitch 加速度字段保留为 ABI 对齐。
+  /// pitch 加速度字段保留用于匹配 DevC HostData 布局。
   float pit_ddot{0.0f};
   /// yaw 加速度前馈，单位 rad/s^2。
   float yaw_ddot{0.0f};
@@ -169,7 +169,7 @@ struct AimerHostGimbalTarget
 static_assert(sizeof(AimerHostGimbalTarget) == sizeof(float) * 9);
 
 /**
- * @brief DevC LauncherCMD 接收的发射许可载荷。
+ * @brief DevC LauncherCMD 接收的发射许可数据。
  */
 struct AimerHostFireNotify
 {
@@ -264,9 +264,9 @@ struct AimerConfig
     double gimbal_response_delay_s{0.0};
     /// 从开火命令到弹丸出膛的估计延迟。
     double fire_delay_s{0.0};
-    /// 低速目标的额外预测延迟。
+    /// 低速目标的预测延迟补偿。
     double low_speed_extra_predict_s{0.015};
-    /// yaw 角速度超过阈值时的额外预测延迟。
+    /// yaw 角速度超过阈值时的预测延迟补偿。
     double high_speed_extra_predict_s{0.03};
     /// 最小角度开火阈值，单位 rad。
     double min_fire_threshold{0.003};

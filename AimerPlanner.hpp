@@ -23,7 +23,7 @@ inline constexpr double PLAN_DEFAULT_DT_S = 0.01;
 inline constexpr int PLAN_HALF_HORIZON = 50;
 /// TinyMPC 总 horizon 长度。
 inline constexpr int PLAN_HORIZON = PLAN_HALF_HORIZON * 2;
-/// MPC 开火误差门控使用的额外偏移。
+/// MPC 开火误差门控使用的采样偏移。
 inline constexpr int PLAN_SHOOT_OFFSET = 2;
 
 /// 参考轨迹行含义：yaw 偏移、yaw 速度、roll 轴命令、roll 轴速度。
@@ -233,7 +233,7 @@ inline void AimerCore::SetupGimbalPlanSolvers()
 }
 
 /**
- * @brief 在目标状态不连续时清理规划器历史。
+ * @brief 在目标状态不连续时清理规划器缓存。
  */
 inline void AimerCore::ResetGimbalPlanHistory()
 {
