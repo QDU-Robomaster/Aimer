@@ -28,6 +28,32 @@ inline constexpr double OUTPOST_APPROACH_WINDOW_RAD = 70.0 * DEG2RAD;
 inline constexpr double OUTPOST_EXIT_WINDOW_RAD = 30.0 * DEG2RAD;
 
 /**
+ * @brief 正余数，避免负相位产生负索引。
+ */
+inline int PositiveMod(int value, int mod)
+{
+  const int result = value % mod;
+  return result < 0 ? result + mod : result;
+}
+
+/**
+ * @brief 展开前哨站本地面高度偏移。
+ */
+inline double OutpostArmorZOffset(const ArmorTrackerTarget& target, int index)
+{
+  switch (PositiveMod(index + target.outpost_height_phase, 3))
+  {
+    case 1:
+      return target.dz;
+    case 2:
+      return -target.dz;
+    case 0:
+    default:
+      return 0.0;
+  }
+}
+
+/**
  * @brief 单个预测状态下选中的装甲板和策略元数据。
  */
 struct AimPoint
@@ -96,8 +122,15 @@ struct PredictedTarget
       // tracker 输出帧为 x 右、y 前、z 上。
       const double armor_x = msg.position.x() + radius * std::sin(angle);
       const double armor_y = msg.position.y() - radius * std::cos(angle);
-      const double armor_z =
-          use_length_height ? msg.position.z() + msg.dz : msg.position.z();
+      double armor_z = msg.position.z();
+      if (use_length_height)
+      {
+        armor_z += msg.dz;
+      }
+      else if (msg.id == ArmorNumber::OUTPOST && msg.armors_num == 3)
+      {
+        armor_z += OutpostArmorZOffset(msg, index);
+      }
       armor_xyza_list.push_back({armor_x, armor_y, armor_z, angle});
     }
 
