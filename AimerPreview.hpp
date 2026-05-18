@@ -149,8 +149,7 @@ class AimerPreview : public LibXR::Application
     const Eigen::Vector3d width_dir(std::cos(yaw), std::sin(yaw), 0.0);
     const Eigen::Vector3d face_normal(-std::sin(yaw), std::cos(yaw), 0.0);
     const double tilt = AimerDetail::ARMOR_TILT_DEG * AimerDetail::DEG2RAD;
-    const double tilt_sign =
-        target.id == ArmorNumber::OUTPOST ? -1.0 : 1.0;
+    const double tilt_sign = 1.0;
     const Eigen::Vector3d height_dir =
         face_normal * (tilt_sign * std::sin(tilt)) +
         Eigen::Vector3d(0.0, 0.0, std::cos(tilt));
