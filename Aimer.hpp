@@ -13,7 +13,7 @@ constructor_args:
     yaw_offset: -1.0
     roll_offset: -1.4
     yaw_rate_threshold: 2.0
-    default_bullet_speed: 23.0
+    default_bullet_speed: 21.0
     min_valid_bullet_speed: 14.0
     ballistic_drag_k: 0.02
     ballistic_integration_dt_s: 0.001
@@ -116,28 +116,21 @@ struct [[gnu::packed]] AimerRefereeGameStatus
 };
 
 /**
- * @brief 裁判系统发射机构反馈摘要。
- */
-struct [[gnu::packed]] AimerRefereeLauncherData
-{
-  uint8_t bullet_type{};
-  uint8_t launcher_id{};
-  uint8_t bullet_freq{};
-  float bullet_speed{};
-};
-
-/**
- * @brief host/sentry_ref 的旧 24 字节裁判系统摘要数据。
+ * @brief host/sentry_ref 的比赛旧 BSP 92 字节裁判系统摘要数据。
+ *
+ * 该 sentry_ref 实际对应旧比赛 BSP 的 RobotGameRefereePack。Aimer 当前只显式消费
+ * RobotStatus/GameStatus 前缀，其余字段保留为不透明尾部，只用于对齐 ABI。
  */
 struct [[gnu::packed]] AimerRefereeSummary
 {
   AimerRefereeRobotStatus robot_status{};
   AimerRefereeGameStatus game_status{};
+  uint8_t reserved_tail[68]{};
 };
 
 static_assert(sizeof(AimerRefereeRobotStatus) == 13);
 static_assert(sizeof(AimerRefereeGameStatus) == 11);
-static_assert(sizeof(AimerRefereeSummary) == 24);
+static_assert(sizeof(AimerRefereeSummary) == 92);
 
 /**
  * @brief DevC HostData 接收的云台目标数据。
@@ -237,7 +230,7 @@ struct AimerConfig
     /// 低速与旋转策略的 yaw 角速度阈值，单位 rad/s。
     double yaw_rate_threshold{2.0};
     /// 弹速异常时使用的默认弹速，单位 m/s。
-    double default_bullet_speed{23.0};
+    double default_bullet_speed{21.0};
     /// 可接受的最小裁判系统弹速，单位 m/s。
     double min_valid_bullet_speed{14.0};
     /// 二次阻力加速度系数，a_drag = -k * |v| * v。
