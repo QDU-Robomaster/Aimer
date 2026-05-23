@@ -220,6 +220,92 @@ inline BallisticSample SimulateQuadraticDragTrajectory(
 }
 
 /**
+ * @brief 解算无阻力解析弹道仰角和飞行时间。
+ * @param bullet_speed 弹速，单位 m/s。
+ * @param horizontal_distance tracker x-y 平面距离，单位 m。
+ * @param target_height tracker z 方向目标高度，单位 m。
+ * @return 弹道解或无解标志。
+ */
+inline TrajectorySolution SolveTrajectoryElevationNoDrag(
+    double bullet_speed, double horizontal_distance, double target_height,
+    double min_elevation_deg, double max_elevation_deg)
+{
+  TrajectorySolution solution;
+  if (bullet_speed <= 0.0 || horizontal_distance <= MIN_HORIZONTAL_DISTANCE_M)
+  {
+    solution.unsolvable = true;
+    return solution;
+  }
+
+  double elevation_min = min_elevation_deg * DEG2RAD;
+  double elevation_max = max_elevation_deg * DEG2RAD;
+  if (elevation_min > elevation_max)
+  {
+    std::swap(elevation_min, elevation_max);
+  }
+
+  const double v2 = bullet_speed * bullet_speed;
+  const double discriminant =
+      v2 * v2 - GRAVITY *
+                    (GRAVITY * horizontal_distance * horizontal_distance +
+                     2.0 * target_height * v2);
+  if (!std::isfinite(discriminant) || discriminant < 0.0)
+  {
+    solution.unsolvable = true;
+    return solution;
+  }
+
+  const double sqrt_term = std::sqrt(std::max(0.0, discriminant));
+  const double denominator = GRAVITY * horizontal_distance;
+  if (!std::isfinite(denominator) || std::abs(denominator) <= 1e-9)
+  {
+    solution.unsolvable = true;
+    return solution;
+  }
+
+  const double tan_candidates[2] = {
+      (v2 - sqrt_term) / denominator,
+      (v2 + sqrt_term) / denominator,
+  };
+
+  for (double tan_theta : tan_candidates)
+  {
+    if (!std::isfinite(tan_theta))
+    {
+      continue;
+    }
+
+    const double elevation = std::atan(tan_theta);
+    if (!std::isfinite(elevation) || elevation < elevation_min ||
+        elevation > elevation_max)
+    {
+      continue;
+    }
+
+    const double cos_elevation = std::cos(elevation);
+    if (!std::isfinite(cos_elevation) || std::abs(cos_elevation) <= 1e-6)
+    {
+      continue;
+    }
+
+    const double fly_time = horizontal_distance / (bullet_speed * cos_elevation);
+    if (!std::isfinite(fly_time) || fly_time <= 0.0 ||
+        fly_time > MAX_BALLISTIC_FLIGHT_TIME_S)
+    {
+      continue;
+    }
+
+    solution.unsolvable = false;
+    solution.elevation = elevation;
+    solution.fly_time = fly_time;
+    return solution;
+  }
+
+  solution.unsolvable = true;
+  return solution;
+}
+
+/**
  * @brief 解算二次阻力低抛弹道仰角和飞行时间。
  * @param bullet_speed 弹速，单位 m/s。
  * @param horizontal_distance tracker x-y 平面距离，单位 m。
