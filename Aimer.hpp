@@ -127,19 +127,17 @@ struct [[gnu::packed]] AimerRefereeLauncherData
 };
 
 /**
- * @brief host/robot_game_ref 的完整 31 字节裁判系统摘要数据。
+ * @brief host/sentry_ref 的旧 24 字节裁判系统摘要数据。
  */
 struct [[gnu::packed]] AimerRefereeSummary
 {
   AimerRefereeRobotStatus robot_status{};
   AimerRefereeGameStatus game_status{};
-  AimerRefereeLauncherData launcher_data{};
 };
 
 static_assert(sizeof(AimerRefereeRobotStatus) == 13);
 static_assert(sizeof(AimerRefereeGameStatus) == 11);
-static_assert(sizeof(AimerRefereeLauncherData) == 7);
-static_assert(sizeof(AimerRefereeSummary) == 31);
+static_assert(sizeof(AimerRefereeSummary) == 24);
 
 /**
  * @brief DevC HostData 接收的云台目标数据。

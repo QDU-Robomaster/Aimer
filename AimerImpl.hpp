@@ -59,7 +59,7 @@ inline void AimerCore::RegisterHostInputCallbacks()
 inline void AimerCore::RegisterGimbalQuatInput()
 {
   LibXR::Topic topic =
-      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("gimbal_quat",
+      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("ahrs_quaternion",
                                                            &host_domain_);
   auto callback = LibXR::Topic::Callback::Create(
       [](bool, AimerCore* self, LibXR::RawData& data)
@@ -82,7 +82,7 @@ inline void AimerCore::RegisterGimbalQuatInput()
 inline void AimerCore::RegisterRefereeSummaryInput()
 {
   LibXR::Topic referee_topic =
-      LibXR::Topic::FindOrCreate<AimerRefereeSummary>("robot_game_ref",
+      LibXR::Topic::FindOrCreate<AimerRefereeSummary>("sentry_ref",
                                                       &host_domain_);
   auto referee_callback = LibXR::Topic::Callback::Create(
       [](bool, AimerCore* self, LibXR::RawData& data)
@@ -138,11 +138,11 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
  */
 inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
-  UpdateBulletSpeed(summary.launcher_data.bullet_speed, "host/robot_game_ref");
+  UpdateBulletSpeed(cfg_.default_bullet_speed, "host/sentry_ref");
   LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
                 static_cast<double>(summary.robot_status.shooter_heat_limit),
                 static_cast<double>(summary.robot_status.shooter_cooling_value),
-                "host/robot_game_ref", false);
+                "host/sentry_ref", false);
 }
 
 /**
