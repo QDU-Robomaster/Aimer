@@ -578,6 +578,37 @@ inline AimCommand BuildAimCommandFromAimPoint(const AimerConfig& cfg,
 }
 
 /**
+ * @brief 为 MPC 参考轨迹使用无阻力解析弹道近似构造命令。
+ */
+inline AimCommand BuildTrajectoryAimCommandFromAimPoint(const AimerConfig& cfg,
+                                                       const AimPoint& aim_point,
+                                                       double bullet_speed)
+{
+  AimCommand command;
+  command.aim_point = aim_point;
+  if (!command.aim_point.valid)
+  {
+    return command;
+  }
+
+  const Eigen::Vector3d xyz = command.aim_point.xyza.head<3>();
+  const double horizontal_distance = HorizontalDistance(xyz);
+  const auto trajectory = SolveTrajectoryElevationNoDrag(
+      bullet_speed, horizontal_distance, BallisticHeight(xyz),
+      cfg.ballistic_min_elevation_deg, cfg.ballistic_max_elevation_deg);
+  if (trajectory.unsolvable)
+  {
+    return command;
+  }
+
+  command.valid = true;
+  command.fly_time = trajectory.fly_time;
+  command.yaw_roll.x() = LimitRad(BearingYaw(xyz) + cfg.yaw_offset * DEG2RAD);
+  command.yaw_roll.y() = trajectory.elevation + cfg.roll_offset * DEG2RAD;
+  return command;
+}
+
+/**
  * @brief 判断弹道射线是否需要穿过车体才能打到该装甲板。
  */
 inline bool IsArmorOnVisibleSide(const PredictedTarget& target,
@@ -667,7 +698,7 @@ inline AimCommand ComputeTrajectoryAimCommand(const AimerConfig& cfg,
                                              const PredictedTarget& target,
                                              double bullet_speed, int& lock_id)
 {
-  return BuildAimCommandFromAimPoint(
+  return BuildTrajectoryAimCommandFromAimPoint(
       cfg, ChooseTrajectoryAimPoint(cfg, target, lock_id), bullet_speed);
 }
 }  // namespace AimerDetail
