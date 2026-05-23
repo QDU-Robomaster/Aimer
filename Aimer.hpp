@@ -139,19 +139,19 @@ struct AimerHostGimbalTarget
 {
   /// 机械俯仰轴 roll 命令，单位 rad。
   float rol{0.0f};
-  /// pitch 字段保留用于匹配 DevC HostData 布局，当前不承载俯仰命令。
+  /// 兼容旧 C 板接口，镜像当前机械俯仰轴 roll 命令。
   float pit{0.0f};
   /// yaw 命令，单位 rad。
   float yaw{0.0f};
   /// 机械俯仰轴 roll 速度前馈，单位 rad/s。
   float rol_dot{0.0f};
-  /// pitch 速度字段保留用于匹配 DevC HostData 布局。
+  /// 兼容旧 C 板接口，镜像当前机械俯仰轴 roll 速度前馈。
   float pit_dot{0.0f};
   /// yaw 速度前馈，单位 rad/s。
   float yaw_dot{0.0f};
   /// 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
   float rol_ddot{0.0f};
-  /// pitch 加速度字段保留用于匹配 DevC HostData 布局。
+  /// 兼容旧 C 板接口，镜像当前机械俯仰轴 roll 加速度前馈。
   float pit_ddot{0.0f};
   /// yaw 加速度前馈，单位 rad/s^2。
   float yaw_ddot{0.0f};

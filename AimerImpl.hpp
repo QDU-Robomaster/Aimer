@@ -365,10 +365,13 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     if (gimbal_plan_msg_.control)
     {
       host_gimbal.rol = gimbal_plan_msg_.roll;
+      host_gimbal.pit = gimbal_plan_msg_.roll;
       host_gimbal.yaw = gimbal_plan_msg_.yaw;
       host_gimbal.rol_dot = gimbal_plan_msg_.roll_vel;
+      host_gimbal.pit_dot = gimbal_plan_msg_.roll_vel;
       host_gimbal.yaw_dot = gimbal_plan_msg_.yaw_vel;
       host_gimbal.rol_ddot = gimbal_plan_msg_.roll_acc;
+      host_gimbal.pit_ddot = gimbal_plan_msg_.roll_acc;
       host_gimbal.yaw_ddot = gimbal_plan_msg_.yaw_acc;
     }
     AimerHostFireNotify host_fire{final_fire};
