@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: Modules/${{ env.XR_MODULE_NAME }}
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Create main.cpp
         run: |
@@ -47,8 +48,15 @@ jobs:
           set(CMAKE_CXX_STANDARD_REQUIRED ON)
           add_executable(xr_test main.cpp)
           set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules/)
-          file(GLOB XR_MODULE_INCLUDE_DIRS LIST_DIRECTORIES true
+          file(GLOB XR_MODULE_CHILDREN RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/Modules
                ${CMAKE_CURRENT_SOURCE_DIR}/Modules/*)
+          set(XR_MODULE_INCLUDE_DIRS "")
+          foreach(child IN LISTS XR_MODULE_CHILDREN)
+            if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Modules/${child}")
+              list(APPEND XR_MODULE_INCLUDE_DIRS
+                   "${CMAKE_CURRENT_SOURCE_DIR}/Modules/${child}")
+            endif()
+          endforeach()
           set(WEBOTS_HOME /usr/local/webots)
           set(LIBXR_PRINT_INTEGER_ENABLE_64BIT ON CACHE BOOL "" FORCE)
           set(LIBXR_PRINT_FLOAT_ENABLE_DOUBLE ON CACHE BOOL "" FORCE)
@@ -89,25 +97,6 @@ jobs:
           cat Modules/sources.yaml
           cat Modules/modules.yaml
 
-      - name: Drop current module from dependency sync list
-        run: |
-          python3 - <<'PY'
-          import yaml
-
-          path = "Modules/modules.yaml"
-          with open(path, "r", encoding="utf-8") as f:
-              data = yaml.safe_load(f)
-
-          current = {"qdu-future/${{ env.XR_MODULE_NAME }}",
-                     "qdu-robomaster/${{ env.XR_MODULE_NAME }}"}
-          data["modules"] = [entry for entry in data.get("modules", [])
-                             if entry not in current]
-
-          with open(path, "w", encoding="utf-8") as f:
-              yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-          PY
-          cat Modules/modules.yaml
-
       - name: Sync module repos from MANIFEST dependencies
         run: xrobot_init_mod
 
@@ -118,6 +107,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: Modules/${{ env.XR_MODULE_NAME }}
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Create module config from MANIFEST defaults
         run: |
