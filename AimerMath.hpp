@@ -36,7 +36,7 @@ inline constexpr double FIRE_BULLET_SPREAD_M = 0.015;
 /// RoboMaster 装甲板固定安装倾角，单位 deg。
 inline constexpr double ARMOR_TILT_DEG = 15.0;
 /// TinyMPC ADMM 最大迭代次数。
-inline constexpr int MPC_MAX_ITER = 6;
+inline constexpr int MPC_MAX_ITER = 5;
 
 /**
  * @brief 将角度限制到 [-pi, pi] 区间。

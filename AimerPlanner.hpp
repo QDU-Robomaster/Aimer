@@ -6,6 +6,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -19,10 +20,10 @@ namespace AimerDetail
 {
 /// 规划器采样周期，单位 s。
 inline constexpr double PLAN_DEFAULT_DT_S = 0.01;
-/// 从规划 horizon 中取出的命令点索引。
-inline constexpr int PLAN_HALF_HORIZON = 50;
 /// TinyMPC 总 horizon 长度。
-inline constexpr int PLAN_HORIZON = PLAN_HALF_HORIZON * 2;
+inline constexpr int PLAN_HORIZON = 75;
+/// 从规划 horizon 中取出的命令点索引。
+inline constexpr int PLAN_HALF_HORIZON = PLAN_HORIZON / 2;
 /// MPC 开火误差门控使用的采样偏移。
 inline constexpr int PLAN_SHOOT_OFFSET = 2;
 
@@ -250,6 +251,7 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
                                           double delay_time, double bullet_speed,
                                           AimerShotCandidate& fire_shot_candidate)
 {
+  const auto plan_start = std::chrono::steady_clock::now();
   fire_shot_candidate = {};
   if (!planner_ready_ || yaw_solver_ == nullptr || roll_solver_ == nullptr)
   {
@@ -265,17 +267,20 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   {
     return false;
   }
+  const auto reference_finish = std::chrono::steady_clock::now();
 
   Eigen::VectorXd x0(2);
   x0 << reference(0, 0), reference(1, 0);
   tiny_set_x0(yaw_solver_, x0);
   yaw_solver_->work->Xref = reference.block(0, 0, 2, AimerDetail::PLAN_HORIZON);
   tiny_solve(yaw_solver_);
+  const auto yaw_finish = std::chrono::steady_clock::now();
 
   x0 << reference(2, 0), reference(3, 0);
   tiny_set_x0(roll_solver_, x0);
   roll_solver_->work->Xref = reference.block(2, 0, 2, AimerDetail::PLAN_HORIZON);
   tiny_solve(roll_solver_);
+  const auto roll_finish = std::chrono::steady_clock::now();
 
   const int output_index = AimerDetail::PLAN_HALF_HORIZON;
   AimerDetail::GimbalPlanSample output{};
@@ -328,6 +333,27 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   gimbal_plan_msg_.roll_vel = static_cast<float>(output.roll_vel);
   gimbal_plan_msg_.roll_acc = static_cast<float>(output.roll_acc);
   last_plan_mpc_ = true;
+
+  if (cfg_.enable_runtime_log)
+  {
+    static uint64_t plan_timing_log_counter = 0;
+    ++plan_timing_log_counter;
+    if ((plan_timing_log_counter % 30ULL) == 0ULL)
+    {
+      const double ref_ms = std::chrono::duration<double, std::milli>(
+          reference_finish - plan_start).count();
+      const double yaw_ms = std::chrono::duration<double, std::milli>(
+          yaw_finish - reference_finish).count();
+      const double roll_ms = std::chrono::duration<double, std::milli>(
+          roll_finish - yaw_finish).count();
+      const double total_ms = std::chrono::duration<double, std::milli>(
+          roll_finish - plan_start).count();
+      XR_LOG_INFO(
+          "Aimer plan timing ref_ms=%.3f yaw_mpc_ms=%.3f roll_mpc_ms=%.3f total_ms=%.3f output_err=%.4f shot_err=%.4f fire=%d",
+          ref_ms, yaw_ms, roll_ms, total_ms, output_plan_error, shot_plan_error,
+          gimbal_plan_msg_.fire ? 1 : 0);
+    }
+  }
   return true;
 }
 

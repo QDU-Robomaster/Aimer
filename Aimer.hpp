@@ -322,6 +322,14 @@ class AimerCore : public LibXR::Application
    */
   void SetPreviewSink(PreviewSink sink, void* context);
   /**
+   * @brief 使用 tracker 同帧同步 IMU 更新当前云台姿态。
+   */
+  void UpdateGimbalRotationFromSyncedImu(const std::array<float, 4>& rotation_wxyz);
+  /**
+   * @brief 清空当前可用的云台姿态，禁止自动开火门控继续使用旧姿态。
+   */
+  void ClearGimbalRotation();
+  /**
    * @brief 处理一帧 tracker 目标消息并发布 host 输出。
    */
   void TargetCallback(const ArmorTrackerTarget& target_msg);
@@ -498,6 +506,14 @@ class Aimer : public AimerCore
   void TargetFrameCallback(const TargetFramePacket& frame)
   {
     current_target_frame_ = &frame;
+    if (frame.source_frame.imu != nullptr)
+    {
+      UpdateGimbalRotationFromSyncedImu(frame.source_frame.imu->rotation_wxyz);
+    }
+    else
+    {
+      ClearGimbalRotation();
+    }
     TargetCallback(*frame.target);
     current_target_frame_ = nullptr;
   }
