@@ -54,6 +54,7 @@ constructor_args:
     enable_runtime_log: true
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
+    convert_raw_gimbal_quat_to_body: false
 template_args:
   - Info:
       width: 1280
@@ -291,6 +292,8 @@ struct AimerConfig
     double bullet_speed_log_delta{0.05};
     /// 热量变化超过该阈值时打印反馈日志。
     double heat_log_delta{1.0};
+    /// 是否把原始 x 前、y 左、z 上的 ahrs_quaternion 转到公开 body 轴。
+    bool convert_raw_gimbal_quat_to_body{false};
 };
 
 /**
