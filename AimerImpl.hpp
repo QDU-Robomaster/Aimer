@@ -49,8 +49,26 @@ inline void AimerCore::PublishPreviewState(const AimerPreviewFrame& state)
  */
 inline void AimerCore::RegisterHostInputCallbacks()
 {
-  RegisterGimbalQuatInput();
   RegisterRefereeSummaryInput();
+}
+
+inline void AimerCore::UpdateGimbalRotationFromSyncedImu(
+    const std::array<float, 4>& rotation_wxyz)
+{
+  LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
+  gimbal_rotation_ = LibXR::Quaternion<double>(
+      static_cast<double>(rotation_wxyz[0]),
+      static_cast<double>(rotation_wxyz[1]),
+      static_cast<double>(rotation_wxyz[2]),
+      static_cast<double>(rotation_wxyz[3]));
+  has_gimbal_rotation_ = true;
+}
+
+inline void AimerCore::ClearGimbalRotation()
+{
+  LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
+  has_gimbal_rotation_ = false;
+  gimbal_rotation_ = LibXR::Quaternion<double>(1.0, 0.0, 0.0, 0.0);
 }
 
 /**
