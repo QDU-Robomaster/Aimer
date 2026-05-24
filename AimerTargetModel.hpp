@@ -116,12 +116,19 @@ struct PredictedTarget
 
     for (int index = 0; index < msg.armors_num; ++index)
     {
-      const double angle = LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
+      const double face_yaw =
+          LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
+      double center_angle = face_yaw;
+      if (msg.id == ArmorNumber::OUTPOST && msg.armors_num == 3)
+      {
+        // Tracker outpost output publishes face yaw. The physical armor center
+        // on the ring is shifted by pi from that face normal.
+        center_angle = LimitRad(face_yaw - PI);
+      }
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
-      // tracker 输出帧为 x 右、y 前、z 上。
-      const double armor_x = msg.position.x() + radius * std::sin(angle);
-      const double armor_y = msg.position.y() - radius * std::cos(angle);
+      const double armor_x = msg.position.x() + radius * std::sin(center_angle);
+      const double armor_y = msg.position.y() - radius * std::cos(center_angle);
       double armor_z = msg.position.z();
       if (use_length_height)
       {
@@ -131,7 +138,7 @@ struct PredictedTarget
       {
         armor_z += OutpostArmorZOffset(msg, index);
       }
-      armor_xyza_list.push_back({armor_x, armor_y, armor_z, angle});
+      armor_xyza_list.push_back({armor_x, armor_y, armor_z, face_yaw});
     }
 
     return armor_xyza_list;

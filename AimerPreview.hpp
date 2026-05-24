@@ -149,15 +149,22 @@ class AimerPreview : public LibXR::Application
     const Eigen::Vector3d width_dir(std::cos(yaw), std::sin(yaw), 0.0);
     const Eigen::Vector3d face_normal(-std::sin(yaw), std::cos(yaw), 0.0);
     const double tilt = AimerDetail::ARMOR_TILT_DEG * AimerDetail::DEG2RAD;
-    const double tilt_sign = 1.0;
     const Eigen::Vector3d height_dir =
-        face_normal * (tilt_sign * std::sin(tilt)) +
-        Eigen::Vector3d(0.0, 0.0, std::cos(tilt));
+        face_normal * std::sin(tilt) + Eigen::Vector3d(0.0, 0.0, std::cos(tilt));
     const Eigen::Vector3d half_w =
         0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * width_dir;
     const Eigen::Vector3d half_h = 0.5 * AimerDetail::ARMOR_HEIGHT_M * height_dir;
     return {center - half_w + half_h, center + half_w + half_h,
             center + half_w - half_h, center - half_w - half_h};
+  }
+
+  static bool IsFrontFacing(const Eigen::Vector4d& xyza,
+                            const ArmorTrackerTarget& target)
+  {
+    const Eigen::Vector3d center = xyza.head<3>();
+    const double yaw = xyza[3];
+    const Eigen::Vector3d face_normal(-std::sin(yaw), std::cos(yaw), 0.0);
+    return face_normal.dot(-center) > 0.0;
   }
 
   /**
@@ -208,8 +215,13 @@ class AimerPreview : public LibXR::Application
     for (int i = 0; i < count; ++i)
     {
       const bool tracked = i == frame.target.tracked_face_index;
+      const bool front = IsFrontFacing(
+          armor_xyza_list[static_cast<std::size_t>(i)], frame.target);
       const cv::Scalar color =
-          tracked ? cv::Scalar(80, 255, 80) : cv::Scalar(255, 180, 40);
+          front ? (tracked ? cv::Scalar(80, 255, 80)
+                           : cv::Scalar(120, 220, 120))
+                : (tracked ? cv::Scalar(255, 80, 220)
+                           : cv::Scalar(220, 140, 220));
       DrawArmorQuad(canvas, armor_xyza_list[static_cast<std::size_t>(i)],
                     frame.target, projection, color, tracked ? 2 : 1);
 
@@ -221,7 +233,9 @@ class AimerPreview : public LibXR::Application
         centers[static_cast<std::size_t>(i)] = center_uv;
         center_valid[static_cast<std::size_t>(i)] = true;
         cv::circle(canvas, center_uv, tracked ? 5 : 4, color, -1, cv::LINE_AA);
-        cv::putText(canvas, "T" + std::to_string(i), center_uv + cv::Point(6, 14),
+        cv::putText(canvas,
+                    std::string(front ? "F" : "B") + std::to_string(i),
+                    center_uv + cv::Point(6, 14),
                     cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
       }
     }
