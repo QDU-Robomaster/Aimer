@@ -258,9 +258,20 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
 inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg)
 {
   LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
-  gimbal_rotation_ =
-      LibXR::Quaternion<double>(gimbal_rotation_msg.w(), gimbal_rotation_msg.x(),
-                                gimbal_rotation_msg.y(), gimbal_rotation_msg.z());
+  if (cfg_.convert_raw_gimbal_quat_to_body)
+  {
+    gimbal_rotation_ =
+        LibXR::Quaternion<double>(gimbal_rotation_msg.w(),
+                                  -static_cast<double>(gimbal_rotation_msg.y()),
+                                  static_cast<double>(gimbal_rotation_msg.x()),
+                                  static_cast<double>(gimbal_rotation_msg.z()));
+  }
+  else
+  {
+    gimbal_rotation_ = LibXR::Quaternion<double>(
+        gimbal_rotation_msg.w(), gimbal_rotation_msg.x(),
+        gimbal_rotation_msg.y(), gimbal_rotation_msg.z());
+  }
   has_gimbal_rotation_ = true;
 }
 
