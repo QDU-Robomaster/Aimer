@@ -86,6 +86,25 @@ jobs:
           cat Modules/sources.yaml
           cat Modules/modules.yaml
 
+      - name: Drop current module from dependency sync list
+        run: |
+          python3 - <<'PY'
+          import yaml
+
+          path = "Modules/modules.yaml"
+          with open(path, "r", encoding="utf-8") as f:
+              data = yaml.safe_load(f)
+
+          current = {"qdu-future/${{ env.XR_MODULE_NAME }}",
+                     "qdu-robomaster/${{ env.XR_MODULE_NAME }}"}
+          data["modules"] = [entry for entry in data.get("modules", [])
+                             if entry not in current]
+
+          with open(path, "w", encoding="utf-8") as f:
+              yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+          PY
+          cat Modules/modules.yaml
+
       - name: Sync module repos from MANIFEST dependencies
         run: xrobot_init_mod
 
