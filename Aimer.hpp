@@ -439,9 +439,9 @@ class AimerCore : public LibXR::Application
 
   LibXR::Topic::Domain host_domain_ = LibXR::Topic::Domain("host");
   LibXR::Topic host_gimbal_topic_ =
-      LibXR::Topic("target_euler", sizeof(AimerHostGimbalTarget), &host_domain_);
+      LibXR::Topic::CreateTopic<AimerHostGimbalTarget>("target_euler", &host_domain_);
   LibXR::Topic host_fire_topic_ =
-      LibXR::Topic("fire_notify", sizeof(AimerHostFireNotify), &host_domain_);
+      LibXR::Topic::CreateTopic<AimerHostFireNotify>("fire_notify", &host_domain_);
 };
 
 #include "AimerImpl.hpp"
