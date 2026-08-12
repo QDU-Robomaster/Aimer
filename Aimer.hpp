@@ -85,9 +85,9 @@ depends:
 
 #include "ArmorTracker.hpp"
 #include "ArmorTrackerTarget.hpp"
+#include "AutoAimReplayBenchmark.hpp"
 #include "CameraBase.hpp"
 #include "GimbalPlan.hpp"
-#include "ReplayBenchmark.hpp"
 #include "VisionPreview.hpp"
 #include "app_framework.hpp"
 #include "libxr.hpp"
