@@ -130,13 +130,20 @@ jobs:
           cd build
           cmake .. \
             -DOpenVINO_DIR=/opt/intel/openvino_2025.4.0/runtime/cmake \
+            -DBUILD_TESTING=ON \
             -DLIBXR_PRINT_INTEGER_ENABLE_64BIT=ON \
             -DLIBXR_PRINT_FLOAT_ENABLE_DOUBLE=ON \
             -DLIBXR_PRINT_ENABLE_POINTER=ON
           make
 
+      - name: Run geometry tests
+        run: >-
+          ctest --test-dir build/libxr --output-on-failure
+          --no-tests=error
+          -R '^aimer_preview_geometry_test$'
+
       - name: Create Tag via GitHub API
-        if: ${{ success() && github.event_name != 'pull_request' }}
+        if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
