@@ -1,0 +1,6 @@
+add_executable(aimer_preview_geometry_test aimer_preview_geometry_test.cpp)
+
+target_link_libraries(aimer_preview_geometry_test PRIVATE xr)
+target_compile_features(aimer_preview_geometry_test PRIVATE cxx_std_20)
+
+add_test(NAME aimer_preview_geometry_test COMMAND aimer_preview_geometry_test)

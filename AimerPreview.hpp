@@ -5,18 +5,18 @@
  * @brief Aimer 内部实时预览实现。
  */
 
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 #include <string>
 #include <utility>
 
-#include <Eigen/Dense>
-#include <Eigen/Geometry>
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
-
+#include "AimerPreviewGeometry.hpp"
 #include "AimerTargetModel.hpp"
 #include "VisionPreview.hpp"
 
@@ -49,13 +49,19 @@ inline AimerPreviewConfig MakeAimerPreviewConfig(const AimerConfig& cfg)
  * cv::Mat 视图传给 VisionPreview::Submit()；实际深拷贝由 VisionPreview
  * 在 Submit() 入口完成。
  */
-template <CameraTypes::CameraInfo CameraInfoV>
+template <CameraTypes::FrameLayout FrameLayoutV>
 class AimerPreview : public LibXR::Application
 {
  public:
-  using SourceFrame = ArmorDetectionsSourceFrame<CameraInfoV>;
-  using ImageFrame = typename SourceFrame::ImageFrame;
-  using TargetFramePacket = ArmorTrackerTargetFramePacket<CameraInfoV>;
+  using Base = CameraBase<FrameLayoutV>;
+  using CameraCalibration = typename Base::CameraCalibration;
+  using FrameGeometry = typename Base::FrameGeometry;
+  using SourceFrame = ArmorDetectionsSourceFrame<FrameLayoutV>;
+  using ImageFrame = typename Base::ImageFrame;
+  using TargetFramePacket = ArmorTrackerTargetFramePacket<FrameLayoutV>;
+
+  static inline constexpr auto frame_layout = Base::frame_layout;
+
   struct ProjectionTransform
   {
     std::array<double, 9> rotation{};
@@ -66,8 +72,8 @@ class AimerPreview : public LibXR::Application
    * @brief 构造 Aimer preview。
    */
   AimerPreview(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
-               AimerPreviewConfig cfg)
-      : cfg_(std::move(cfg)), preview_(cfg_.preview)
+               AimerPreviewConfig cfg, CameraCalibration calibration)
+      : cfg_(std::move(cfg)), calibration_(std::move(calibration)), preview_(cfg_.preview)
   {
     app.Register(*this);
   }
@@ -80,8 +86,7 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 处理 Aimer Core 同步提交的本帧状态。
    */
-  void OnAimerFrame(const AimerPreviewFrame& frame,
-                    const TargetFramePacket* target_frame)
+  void OnAimerFrame(const AimerPreviewFrame& frame, const TargetFramePacket* target_frame)
   {
     SubmitPreview(frame, target_frame);
   }
@@ -90,37 +95,27 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 相机光轴坐标转像素。
    */
-  static bool ProjectOpticalPoint(const Eigen::Vector3d& point, cv::Point& uv)
+  bool ProjectOpticalPoint(const Eigen::Vector3d& point, const FrameGeometry& geometry,
+                           cv::Point& uv) const
   {
-    const double x = point.x();
-    const double y = point.y();
-    const double depth = point.z();
-    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(depth) ||
-        depth <= 1e-6)
+    std::array<double, 2> frame_point{};
+    if (!AimerDetail::ProjectOpticalToFrame(point.x(), point.y(), point.z(), calibration_,
+                                            geometry, frame_point))
     {
       return false;
     }
 
-    const double u = static_cast<double>(CameraInfoV.camera_matrix[0]) * x / depth +
-                     static_cast<double>(CameraInfoV.camera_matrix[2]);
-    const double v = static_cast<double>(CameraInfoV.camera_matrix[4]) * y / depth +
-                     static_cast<double>(CameraInfoV.camera_matrix[5]);
-    if (!std::isfinite(u) || !std::isfinite(v))
-    {
-      return false;
-    }
-
-    uv = cv::Point(static_cast<int>(std::lround(u)),
-                   static_cast<int>(std::lround(v)));
+    uv = cv::Point(static_cast<int>(std::lround(frame_point[0])),
+                   static_cast<int>(std::lround(frame_point[1])));
     return true;
   }
 
   /**
    * @brief tracker 输出坐标系点转像素。
    */
-  static bool ProjectOutputPoint(const Eigen::Vector3d& point,
-                                 const ProjectionTransform& projection,
-                                 cv::Point& uv)
+  bool ProjectOutputPoint(const Eigen::Vector3d& point,
+                          const ProjectionTransform& projection,
+                          const FrameGeometry& geometry, cv::Point& uv) const
   {
     Eigen::Matrix3d R_output_to_camera;
     for (int row = 0; row < 3; ++row)
@@ -132,17 +127,16 @@ class AimerPreview : public LibXR::Application
       }
     }
     const Eigen::Vector3d t_output_to_camera(
-        projection.translation[0], projection.translation[1],
-        projection.translation[2]);
-    return ProjectOpticalPoint(R_output_to_camera * point + t_output_to_camera,
+        projection.translation[0], projection.translation[1], projection.translation[2]);
+    return ProjectOpticalPoint(R_output_to_camera * point + t_output_to_camera, geometry,
                                uv);
   }
 
   /**
    * @brief 根据 target 几何状态构造装甲板四角。
    */
-  static std::array<Eigen::Vector3d, 4> BuildArmorQuad(
-      const Eigen::Vector4d& xyza, const ArmorTrackerTarget& target)
+  static std::array<Eigen::Vector3d, 4> BuildArmorQuad(const Eigen::Vector4d& xyza,
+                                                       const ArmorTrackerTarget& target)
   {
     const Eigen::Vector3d center = xyza.head<3>();
     const double yaw = xyza[3];
@@ -151,15 +145,13 @@ class AimerPreview : public LibXR::Application
     const double tilt = AimerDetail::ARMOR_TILT_DEG * AimerDetail::DEG2RAD;
     const Eigen::Vector3d height_dir =
         face_normal * std::sin(tilt) + Eigen::Vector3d(0.0, 0.0, std::cos(tilt));
-    const Eigen::Vector3d half_w =
-        0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * width_dir;
+    const Eigen::Vector3d half_w = 0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * width_dir;
     const Eigen::Vector3d half_h = 0.5 * AimerDetail::ARMOR_HEIGHT_M * height_dir;
-    return {center - half_w + half_h, center + half_w + half_h,
-            center + half_w - half_h, center - half_w - half_h};
+    return {center - half_w + half_h, center + half_w + half_h, center + half_w - half_h,
+            center - half_w - half_h};
   }
 
-  static bool IsFrontFacing(const Eigen::Vector4d& xyza,
-                            const ArmorTrackerTarget& target)
+  static bool IsFrontFacing(const Eigen::Vector4d& xyza, const ArmorTrackerTarget& target)
   {
     const Eigen::Vector3d center = xyza.head<3>();
     const double yaw = xyza[3];
@@ -170,16 +162,16 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 绘制单个装甲板四边形。
    */
-  static bool DrawArmorQuad(cv::Mat& canvas, const Eigen::Vector4d& xyza,
-                            const ArmorTrackerTarget& target,
-                            const ProjectionTransform& projection,
-                            const cv::Scalar& color, int thickness)
+  bool DrawArmorQuad(cv::Mat& canvas, const Eigen::Vector4d& xyza,
+                     const ArmorTrackerTarget& target,
+                     const ProjectionTransform& projection, const FrameGeometry& geometry,
+                     const cv::Scalar& color, int thickness) const
   {
     const auto quad = BuildArmorQuad(xyza, target);
     std::array<cv::Point, 4> corners{};
     for (std::size_t i = 0; i < quad.size(); ++i)
     {
-      if (!ProjectOutputPoint(quad[i], projection, corners[i]))
+      if (!ProjectOutputPoint(quad[i], projection, geometry, corners[i]))
       {
         return false;
       }
@@ -188,8 +180,8 @@ class AimerPreview : public LibXR::Application
     for (int edge = 0; edge < 4; ++edge)
     {
       cv::line(canvas, corners[static_cast<std::size_t>(edge)],
-               corners[static_cast<std::size_t>((edge + 1) % 4)], color,
-               thickness, cv::LINE_AA);
+               corners[static_cast<std::size_t>((edge + 1) % 4)], color, thickness,
+               cv::LINE_AA);
     }
     return true;
   }
@@ -197,8 +189,9 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 绘制 tracker 当前四个装甲板和当前绑定面。
    */
-  static void DrawTrackerArmors(cv::Mat& canvas, const AimerPreviewFrame& frame,
-                                const ProjectionTransform& projection)
+  void DrawTrackerArmors(cv::Mat& canvas, const AimerPreviewFrame& frame,
+                         const ProjectionTransform& projection,
+                         const FrameGeometry& geometry) const
   {
     if (!frame.have_target || !frame.target.tracking)
     {
@@ -209,34 +202,29 @@ class AimerPreview : public LibXR::Application
     const auto armor_xyza_list = current.GetArmorXYZAList();
     std::array<cv::Point, 4> centers{};
     std::array<bool, 4> center_valid{};
-    const int count =
-        std::min<int>(4, static_cast<int>(armor_xyza_list.size()));
+    const int count = std::min<int>(4, static_cast<int>(armor_xyza_list.size()));
 
     for (int i = 0; i < count; ++i)
     {
       const bool tracked = i == frame.target.tracked_face_index;
-      const bool front = IsFrontFacing(
-          armor_xyza_list[static_cast<std::size_t>(i)], frame.target);
+      const bool front =
+          IsFrontFacing(armor_xyza_list[static_cast<std::size_t>(i)], frame.target);
       const cv::Scalar color =
-          front ? (tracked ? cv::Scalar(80, 255, 80)
-                           : cv::Scalar(120, 220, 120))
-                : (tracked ? cv::Scalar(255, 80, 220)
-                           : cv::Scalar(220, 140, 220));
-      DrawArmorQuad(canvas, armor_xyza_list[static_cast<std::size_t>(i)],
-                    frame.target, projection, color, tracked ? 2 : 1);
+          front ? (tracked ? cv::Scalar(80, 255, 80) : cv::Scalar(120, 220, 120))
+                : (tracked ? cv::Scalar(255, 80, 220) : cv::Scalar(220, 140, 220));
+      DrawArmorQuad(canvas, armor_xyza_list[static_cast<std::size_t>(i)], frame.target,
+                    projection, geometry, color, tracked ? 2 : 1);
 
       cv::Point center_uv;
-      if (ProjectOutputPoint(
-              armor_xyza_list[static_cast<std::size_t>(i)].head<3>(),
-              projection, center_uv))
+      if (ProjectOutputPoint(armor_xyza_list[static_cast<std::size_t>(i)].head<3>(),
+                             projection, geometry, center_uv))
       {
         centers[static_cast<std::size_t>(i)] = center_uv;
         center_valid[static_cast<std::size_t>(i)] = true;
         cv::circle(canvas, center_uv, tracked ? 5 : 4, color, -1, cv::LINE_AA);
-        cv::putText(canvas,
-                    std::string(front ? "F" : "B") + std::to_string(i),
-                    center_uv + cv::Point(6, 14),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
+        cv::putText(canvas, std::string(front ? "F" : "B") + std::to_string(i),
+                    center_uv + cv::Point(6, 14), cv::FONT_HERSHEY_SIMPLEX, 0.45, color,
+                    1, cv::LINE_AA);
       }
     }
 
@@ -247,8 +235,8 @@ class AimerPreview : public LibXR::Application
           center_valid[static_cast<std::size_t>(next)])
       {
         cv::line(canvas, centers[static_cast<std::size_t>(i)],
-                 centers[static_cast<std::size_t>(next)],
-                 cv::Scalar(120, 220, 255), 1, cv::LINE_AA);
+                 centers[static_cast<std::size_t>(next)], cv::Scalar(120, 220, 255), 1,
+                 cv::LINE_AA);
       }
     }
   }
@@ -256,8 +244,9 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 绘制 Aimer 预测选板和最终瞄点。
    */
-  static void DrawPrediction(cv::Mat& canvas, const AimerPreviewFrame& frame,
-                             const ProjectionTransform& projection)
+  void DrawPrediction(cv::Mat& canvas, const AimerPreviewFrame& frame,
+                      const ProjectionTransform& projection,
+                      const FrameGeometry& geometry) const
   {
     if (!frame.have_target || !frame.target.tracking || !frame.aim_point_valid)
     {
@@ -265,23 +254,21 @@ class AimerPreview : public LibXR::Application
     }
 
     const bool fire = frame.have_host_fire && frame.host_fire.isfire;
-    const cv::Scalar color = fire ? cv::Scalar(0, 0, 255)
-                                  : cv::Scalar(0, 180, 255);
-    DrawArmorQuad(canvas, frame.aim_xyza, frame.target, projection,
-                  color, 2);
+    const cv::Scalar color = fire ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 180, 255);
+    DrawArmorQuad(canvas, frame.aim_xyza, frame.target, projection, geometry, color, 2);
 
     cv::Point aim_uv;
-    if (ProjectOutputPoint(frame.aim_point, projection, aim_uv))
+    if (ProjectOutputPoint(frame.aim_point, projection, geometry, aim_uv))
     {
-      cv::drawMarker(canvas, aim_uv, color, cv::MARKER_TILTED_CROSS,
-                     fire ? 24 : 20, 2, cv::LINE_AA);
+      cv::drawMarker(canvas, aim_uv, color, cv::MARKER_TILTED_CROSS, fire ? 24 : 20, 2,
+                     cv::LINE_AA);
       if (fire)
       {
         cv::circle(canvas, aim_uv, 11, color, 2, cv::LINE_AA);
       }
       cv::putText(canvas, "A" + std::to_string(frame.aim_armor_index),
-                  aim_uv + cv::Point(8, -8), cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                  color, 1, cv::LINE_AA);
+                  aim_uv + cv::Point(8, -8), cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1,
+                  cv::LINE_AA);
     }
   }
 
@@ -293,38 +280,38 @@ class AimerPreview : public LibXR::Application
     const bool tracking = frame.have_target && frame.target.tracking;
     const bool fire = frame.have_host_fire && frame.host_fire.isfire;
     const std::size_t id_index = static_cast<std::size_t>(frame.target.id);
-    const std::string id_name =
-        tracking && id_index < ARMOR_NUMBER_NAMES.size()
-            ? std::string(ARMOR_NUMBER_NAMES[id_index])
-            : std::string("invalid");
+    const std::string id_name = tracking && id_index < ARMOR_NUMBER_NAMES.size()
+                                    ? std::string(ARMOR_NUMBER_NAMES[id_index])
+                                    : std::string("invalid");
     const std::string header =
-        std::string("aimer ") + (tracking ? "TRACK" : "NO_TARGET") +
-        " id=" + id_name + " track_face=" +
-        std::to_string(tracking ? frame.target.tracked_face_index : -1) +
+        std::string("aimer ") + (tracking ? "TRACK" : "NO_TARGET") + " id=" + id_name +
+        " track_face=" + std::to_string(tracking ? frame.target.tracked_face_index : -1) +
         " aim_face=" + std::to_string(frame.aim_armor_index) +
         " fire=" + std::to_string(fire ? 1 : 0);
-    cv::putText(canvas, header, cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX,
-                0.68, cv::Scalar(40, 240, 40), 2, cv::LINE_AA);
+    cv::putText(canvas, header, cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.68,
+                cv::Scalar(40, 240, 40), 2, cv::LINE_AA);
   }
 
   /**
    * @brief 绘制完整 Aimer 预览。
    */
-  static void DrawPreview(cv::Mat& canvas, const AimerPreviewFrame& frame,
-                          const ProjectionTransform& projection)
+  void DrawPreview(cv::Mat& canvas, const AimerPreviewFrame& frame,
+                   const ProjectionTransform& projection,
+                   const FrameGeometry& geometry) const
   {
-    DrawTrackerArmors(canvas, frame, projection);
-    DrawPrediction(canvas, frame, projection);
+    DrawTrackerArmors(canvas, frame, projection, geometry);
+    DrawPrediction(canvas, frame, projection, geometry);
     DrawStatus(canvas, frame);
   }
 
   /**
    * @brief 将源图像帧转换为 BGR Mat 视图或临时转换图。
    */
-  static bool MakeBgrImage(const ImageFrame& image_frame, cv::Mat& bgr_image)
+  static bool MakeBgrImage(const ImageFrame& image_frame, const FrameGeometry& geometry,
+                           cv::Mat& bgr_image)
   {
     int cv_type = -1;
-    switch (CameraInfoV.encoding)
+    switch (frame_layout.encoding)
     {
       case CameraTypes::Encoding::RGB8:
       case CameraTypes::Encoding::BGR8:
@@ -341,11 +328,10 @@ class AimerPreview : public LibXR::Application
         return false;
     }
 
-    cv::Mat image(static_cast<int>(CameraInfoV.height),
-                  static_cast<int>(CameraInfoV.width), cv_type,
-                  const_cast<uint8_t*>(image_frame.data.data()),
-                  static_cast<size_t>(CameraInfoV.step));
-    switch (CameraInfoV.encoding)
+    cv::Mat image(static_cast<int>(geometry.height), static_cast<int>(geometry.width),
+                  cv_type, const_cast<uint8_t*>(image_frame.data.data()),
+                  static_cast<size_t>(geometry.step));
+    switch (frame_layout.encoding)
     {
       case CameraTypes::Encoding::BGR8:
         bgr_image = image;
@@ -382,28 +368,28 @@ class AimerPreview : public LibXR::Application
     }
     const SourceFrame& source_frame = target_frame->source_frame;
     if (source_frame.image_timestamp_us != frame.image_timestamp_us ||
-        source_frame.image_frame->timestamp_us != frame.image_timestamp_us)
+        source_frame.image_frame->timestamp_us != frame.image_timestamp_us ||
+        !CameraTypes::ValidateFrameGeometry(frame_layout, calibration_,
+                                            source_frame.geometry))
     {
       return;
     }
-    const ProjectionTransform projection{
-        target_frame->output_to_camera_rotation,
-        target_frame->output_to_camera_translation};
+    const ProjectionTransform projection{target_frame->output_to_camera_rotation,
+                                         target_frame->output_to_camera_translation};
 
     cv::Mat bgr_image;
-    if (!MakeBgrImage(*source_frame.image_frame, bgr_image))
+    if (!MakeBgrImage(*source_frame.image_frame, source_frame.geometry, bgr_image))
     {
       return;
     }
 
-    preview_.Submit(bgr_image,
-                    [frame, projection](cv::Mat& canvas)
-                    {
-                      DrawPreview(canvas, frame, projection);
-                    });
+    const FrameGeometry geometry = source_frame.geometry;
+    preview_.Submit(bgr_image, [this, frame, projection, geometry](cv::Mat& canvas)
+                    { DrawPreview(canvas, frame, projection, geometry); });
   }
 
  private:
   AimerPreviewConfig cfg_{};
+  const CameraCalibration calibration_;
   VisionPreview preview_{};
 };

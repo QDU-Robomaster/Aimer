@@ -8,7 +8,7 @@ DevC 云台目标和发射许可。控制逻辑只使用 tracker 目标状态；
 ## 数据流
 
 - 输入 `tracker/target_frame`：`ArmorTracker` 发布的同源目标帧，包含
-  `ArmorTrackerTarget` 和 detector 源图像/IMU。
+  `ArmorTrackerTarget`、detector 源图像/IMU，以及按值携带的逐帧采样几何。
 - 输入 `host/robot_game_ref`：完整裁判摘要，数据类型为 Aimer 本地定义的 31 字节 `AimerRefereeSummary`，用于更新反馈弹速并记录热量上限和冷却值；异常或过低时回退到默认弹速。
 - 输入 `host/gimbal_quat`：C 板回传的云台当前姿态，只用于自动开火判定。
 - 输出 `host/target_euler`：DevC `HostData` 接收的云台目标，包含角度、角速度和角加速度前馈；机械俯仰轴使用 roll 字段。
@@ -19,12 +19,12 @@ Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，
 
 ## 代码结构
 
-- `Aimer.hpp` 保留模块 manifest、公有消息结构、配置项、`AimerCore` 运行核心和外层 `Aimer<Info>` 模块。
+- `Aimer.hpp` 保留模块 manifest、公有消息结构、配置项、`AimerCore` 运行核心和外层 `Aimer<Layout>` 模块。
 - `AimerMath.hpp` 放角度归一化、坐标水平面约定、动态开火阈值和弹道解算。
 - `AimerTargetModel.hpp` 放 tracker target 预测、装甲板展开和瞄点选择。
 - `AimerPlanner.hpp` 放 TinyMPC 参考轨迹、求解器初始化和 host 云台目标生成。
 - `AimerImpl.hpp` 放 topic 回调、命令发布和主回调流程；模块自身实现已改为头文件内联，TinyMPC 自身 `.cpp` 仍由 CMake 编译。
-- `AimerPreview.hpp` 是 `Aimer<Info>` 内部持有的预览实现，在 tracker 同源图像上绘制 tracker 装甲模型与最终瞄点。
+- `AimerPreview.hpp` 是 `Aimer<Layout>` 内部持有的预览实现，在 tracker 同源图像上绘制 tracker 装甲模型与最终瞄点。
 
 ## 策略
 
@@ -52,25 +52,18 @@ Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，
 
 预览不会订阅原始图像、detector 结果或 host 输出，也不会输出调试 topic。
 
-在 BSP 里只实例化 `Aimer`，不要单独实例化 `AimerPreview`。开启方式是给
-`Aimer` 配置相机模板参数和 `cfg.preview`：
+`Aimer` 的模板参数只描述固定图像缓冲区布局和编码。原生传感器内参在构造期以
+`CameraCalibration` 按值传入并保持不变；每帧 ROI、下采样和翻转关系由
+`target_frame.source_frame.geometry` 按值携带。预览先使用原生内参投影到原生像素，
+再通过该帧 geometry 映射到实际图像坐标，因此 wide 和 centered ROI 共用同一套标定。
 
-```yaml
-- id: aimer
-  name: Aimer
-  template_args:
-    Info: {constexpr: AutoAimRunConfig::HikCameraInfo}
-  constructor_args:
-    cfg:
-      preview:
-        enabled: true
-        output_mode: web
-        web_stream_name: aimer_preview
-```
+在 BSP 里只实例化 `Aimer`，不要单独实例化 `AimerPreview`。启用预览只需设置
+`cfg.preview.enabled`，并向 `Aimer` 构造函数显式传入与相机一致的原生标定。
 
 ## 职责
 
 - Aimer 不负责目标跟踪，也不修改同步链路。
 - Aimer 直接发布 DevC 接口的 `host/target_euler` 和 `host/fire_notify`。
 - Aimer 的输入以 `ArmorTrackerTarget` 字段和显式预测延迟配置为准。
+- 相机标定只影响内置预览投影，不进入控制、弹道或 MPC 计算。
 - 运行日志不参与控制闭环；热量反馈缺失时不会伪造当前热量。
