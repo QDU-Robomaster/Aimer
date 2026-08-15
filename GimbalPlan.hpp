@@ -15,7 +15,7 @@
  */
 struct GimbalPlan
 {
-  /// 来源 tracker 帧时间戳，单位 us。
+  /// 来源 tracker 的 MCU 触发沿时间戳，单位 us。
   uint64_t image_timestamp_us{0};
   /// 下位机控制器是否应使用该命令。
   bool control{false};

@@ -32,9 +32,9 @@ void TestWideAndCenteredRoi()
 {
   const CameraTypes::CameraCalibration calibration = MakeCalibration();
   const CameraTypes::FrameGeometry wide{
-      1, 720, 540, 2160, 0, 0, 2, 2, CameraTypes::FRAME_GEOMETRY_NONE, 0, 0.0F, 0.0F};
+      720, 540, 2160, 0, 0, 2, 2, CameraTypes::FRAME_GEOMETRY_NONE, 0, 0.0F, 0.0F};
   const CameraTypes::FrameGeometry roi{
-      2, 720, 540, 2160, 360, 270, 1, 1, CameraTypes::FRAME_GEOMETRY_NONE, 0, 0.0F, 0.0F};
+      720, 540, 2160, 360, 270, 1, 1, CameraTypes::FRAME_GEOMETRY_NONE, 0, 0.0F, 0.0F};
 
   std::array<double, 2> wide_point{};
   std::array<double, 2> roi_point{};
@@ -55,7 +55,6 @@ void TestReverseFlags()
 {
   const CameraTypes::CameraCalibration calibration = MakeCalibration();
   const CameraTypes::FrameGeometry geometry{
-      3,
       720,
       540,
       2160,
@@ -81,7 +80,7 @@ void TestInvalidDepth()
 {
   const CameraTypes::CameraCalibration calibration = MakeCalibration();
   const CameraTypes::FrameGeometry geometry{
-      1, 720, 540, 2160, 0, 0, 2, 2, CameraTypes::FRAME_GEOMETRY_NONE, 0, 0.0F, 0.0F};
+      720, 540, 2160, 0, 0, 2, 2, CameraTypes::FRAME_GEOMETRY_NONE, 0, 0.0F, 0.0F};
   std::array<double, 2> point{};
   if (AimerDetail::ProjectOpticalToFrame(0.0, 0.0, 0.0, calibration, geometry, point) ||
       AimerDetail::ProjectOpticalToFrame(std::numeric_limits<double>::quiet_NaN(), 0.0,

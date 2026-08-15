@@ -83,7 +83,6 @@ depends:
 #include <optional>
 #include <utility>
 
-#include "ArmorTracker.hpp"
 #include "ArmorTrackerTarget.hpp"
 #include "AutoAimReplayBenchmark.hpp"
 #include "CameraBase.hpp"
@@ -183,7 +182,7 @@ static_assert(sizeof(AimerHostFireNotify) == 1);
  */
 struct AimerPreviewFrame
 {
-  /// 图像传感器时间戳，单位 us。
+  /// 匹配触发沿的 MCU 陀螺仪时间戳，单位 us。
   uint64_t image_timestamp_us{};
   /// 当前帧是否带有 tracker 目标消息。
   bool have_target{false};
@@ -458,8 +457,8 @@ class Aimer : public AimerCore
  public:
   using Config = AimerConfig;
   using CameraCalibration = CameraTypes::CameraCalibration;
-  using TargetFramePacket = ArmorTrackerTargetFramePacket<FrameLayoutV>;
-  using TargetFrameMessage = ArmorTrackerTargetFrameMessage<FrameLayoutV>;
+  using TargetFrame = TrackedFrame<FrameLayoutV>;
+  using TargetFrameMessage = TrackedFrameMessage<FrameLayoutV>;
 
   /**
    * @brief 构造瞄准模块，并固定预览使用的原生相机标定。
@@ -492,7 +491,7 @@ class Aimer : public AimerCore
     auto callback = LibXR::Topic::Callback::Create(
         [](bool, Aimer* self, const TargetFrameMessage& message)
         {
-          if (message == nullptr || message->target == nullptr)
+          if (message == nullptr || !message->Valid())
           {
             return;
           }
@@ -505,18 +504,11 @@ class Aimer : public AimerCore
   /**
    * @brief 处理 tracker 同帧目标和源图像。
    */
-  void TargetFrameCallback(const TargetFramePacket& frame)
+  void TargetFrameCallback(const TargetFrame& frame)
   {
     current_target_frame_ = &frame;
-    if (frame.source_frame.imu != nullptr)
-    {
-      UpdateGimbalRotationFromSyncedImu(frame.source_frame.imu->rotation_wxyz);
-    }
-    else
-    {
-      ClearGimbalRotation();
-    }
-    TargetCallback(*frame.target);
+    UpdateGimbalRotationFromSyncedImu(frame.imu.rotation_wxyz);
+    TargetCallback(frame.target);
     current_target_frame_ = nullptr;
   }
 
@@ -532,7 +524,7 @@ class Aimer : public AimerCore
   }
 
   LibXR::Topic target_frame_topic_ = LibXR::Topic();
-  const TargetFramePacket* current_target_frame_{nullptr};
+  const TargetFrame* current_target_frame_{nullptr};
   const CameraCalibration calibration_;
   std::optional<AimerPreview<FrameLayoutV>> preview_;
 };

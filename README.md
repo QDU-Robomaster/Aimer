@@ -2,13 +2,13 @@
 
 `Aimer` 是 tracker 后面的瞄点与弹道模块。它收到 `tracker/target_frame`
 后选择要打的装甲板，预测目标运动，解算最终机械俯仰 roll 和 yaw，并发布
-DevC 云台目标和发射许可。控制逻辑只使用 tracker 目标状态；同源图像和 IMU
-只供内置 preview 投影使用。
+DevC 云台目标和发射许可。控制逻辑使用 tracker 目标状态和同帧 IMU；同源图像
+供内置 preview 投影使用。
 
 ## 数据流
 
-- 输入 `tracker/target_frame`：`ArmorTracker` 发布的同源目标帧，包含
-  `ArmorTrackerTarget`、detector 源图像/IMU，以及按值携带的逐帧采样几何。
+- 输入 `tracker/target_frame`：`ArmorTracker` 同步发布的 `const TrackedFrame*`，包含
+  `SharedFrame` 图像所有权，以及按值携带的 IMU、`ArmorTrackerTarget` 和投影变换。
 - 输入 `host/robot_game_ref`：完整裁判摘要，数据类型为 Aimer 本地定义的 31 字节 `AimerRefereeSummary`，用于更新反馈弹速并记录热量上限和冷却值；异常或过低时回退到默认弹速。
 - 输入 `host/gimbal_quat`：C 板回传的云台当前姿态，只用于自动开火判定。
 - 输出 `host/target_euler`：DevC `HostData` 接收的云台目标，包含角度、角速度和角加速度前馈；机械俯仰轴使用 roll 字段。
@@ -53,8 +53,8 @@ Aimer 的 yaw 以前向为 0、左转为正；水平距离使用 `x-y` 平面，
 预览不会订阅原始图像、detector 结果或 host 输出，也不会输出调试 topic。
 
 `Aimer` 的模板参数只描述固定图像缓冲区布局和编码。原生传感器内参在构造期以
-`CameraCalibration` 按值传入并保持不变；每帧 ROI、下采样和翻转关系由
-`target_frame.source_frame.geometry` 按值携带。预览先使用原生内参投影到原生像素，
+`CameraCalibration` 按值传入并保持不变；每帧 ROI、下采样和翻转关系只从
+`target_frame.image.Get()->geometry` 读取。预览先使用原生内参投影到原生像素，
 再通过该帧 geometry 映射到实际图像坐标，因此 wide 和 centered ROI 共用同一套标定。
 
 在 BSP 里只实例化 `Aimer`，不要单独实例化 `AimerPreview`。启用预览只需设置
