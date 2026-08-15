@@ -99,7 +99,7 @@ class AimerPreview : public LibXR::Application
   {
     std::array<double, 2> frame_point{};
     if (!AimerDetail::ProjectOpticalToFrame(point.x(), point.y(), point.z(), calibration_,
-                                            geometry, frame_point))
+                                            frame_layout, geometry, frame_point))
     {
       return false;
     }
