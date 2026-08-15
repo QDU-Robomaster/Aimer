@@ -4,3 +4,9 @@ target_link_libraries(aimer_preview_geometry_test PRIVATE xr)
 target_compile_features(aimer_preview_geometry_test PRIVATE cxx_std_20)
 
 add_test(NAME aimer_preview_geometry_test COMMAND aimer_preview_geometry_test)
+
+add_executable(aimer_stage_frame_access_test stage_frame_access_test.cpp)
+target_link_libraries(aimer_stage_frame_access_test PRIVATE xr)
+target_compile_features(aimer_stage_frame_access_test PRIVATE cxx_std_20)
+
+add_test(NAME aimer_stage_frame_access_test COMMAND aimer_stage_frame_access_test)

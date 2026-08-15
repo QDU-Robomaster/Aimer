@@ -45,7 +45,7 @@ inline AimerPreviewConfig MakeAimerPreviewConfig(const AimerConfig& cfg)
 /**
  * @brief Aimer 预览：在 tracker 同源图像上绘制 Aimer 本帧状态。
  *
- * tracker/target_frame 中的图像指针只在回调期间有效。本类只把原图
+ * tracker/target_frame 中的共享图像只在同步回调期间借用。本类只把原图
  * cv::Mat 视图传给 VisionPreview::Submit()；实际深拷贝由 VisionPreview
  * 在 Submit() 入口完成。
  */
@@ -56,9 +56,8 @@ class AimerPreview : public LibXR::Application
   using Base = CameraBase<FrameLayoutV>;
   using CameraCalibration = typename Base::CameraCalibration;
   using FrameGeometry = typename Base::FrameGeometry;
-  using SourceFrame = ArmorDetectionsSourceFrame<FrameLayoutV>;
   using ImageFrame = typename Base::ImageFrame;
-  using TargetFramePacket = ArmorTrackerTargetFramePacket<FrameLayoutV>;
+  using TargetFrame = TrackedFrame<FrameLayoutV>;
 
   static inline constexpr auto frame_layout = Base::frame_layout;
 
@@ -86,7 +85,7 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 处理 Aimer Core 同步提交的本帧状态。
    */
-  void OnAimerFrame(const AimerPreviewFrame& frame, const TargetFramePacket* target_frame)
+  void OnAimerFrame(const AimerPreviewFrame& frame, const TargetFrame* target_frame)
   {
     SubmitPreview(frame, target_frame);
   }
@@ -358,19 +357,19 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 提交预览帧。
    */
-  void SubmitPreview(const AimerPreviewFrame& frame,
-                     const TargetFramePacket* target_frame)
+  void SubmitPreview(const AimerPreviewFrame& frame, const TargetFrame* target_frame)
   {
-    if (!preview_.Running() || target_frame == nullptr ||
-        target_frame->source_frame.image_frame == nullptr)
+    if (!preview_.Running() || target_frame == nullptr || !target_frame->Valid())
     {
       return;
     }
-    const SourceFrame& source_frame = target_frame->source_frame;
-    if (source_frame.image_timestamp_us != frame.image_timestamp_us ||
-        source_frame.image_frame->timestamp_us != frame.image_timestamp_us ||
+
+    const ImageFrame* const image_frame = target_frame->GetImageFrame();
+    if (image_frame == nullptr ||
+        static_cast<uint64_t>(target_frame->imu.timestamp_us) !=
+            frame.image_timestamp_us ||
         !CameraTypes::ValidateFrameGeometry(frame_layout, calibration_,
-                                            source_frame.geometry))
+                                            image_frame->geometry))
     {
       return;
     }
@@ -378,12 +377,12 @@ class AimerPreview : public LibXR::Application
                                          target_frame->output_to_camera_translation};
 
     cv::Mat bgr_image;
-    if (!MakeBgrImage(*source_frame.image_frame, source_frame.geometry, bgr_image))
+    if (!MakeBgrImage(*image_frame, image_frame->geometry, bgr_image))
     {
       return;
     }
 
-    const FrameGeometry geometry = source_frame.geometry;
+    const FrameGeometry geometry = image_frame->geometry;
     preview_.Submit(bgr_image, [this, frame, projection, geometry](cv::Mat& canvas)
                     { DrawPreview(canvas, frame, projection, geometry); });
   }
