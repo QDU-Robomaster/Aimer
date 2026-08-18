@@ -364,8 +364,6 @@ inline void AimerCore::OnMonitor()
 inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
   auto target_callback_measurement = target_callback_duration_.Measure();
-  const auto callback_start = std::chrono::steady_clock::now();
-  AutoAimReplayBenchmark::RecordAimerStart(target_msg.image_timestamp_us);
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   AimerPreviewFrame preview_frame{};
@@ -399,20 +397,6 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     preview_frame.host_fire = host_fire;
     PublishPreviewState(preview_frame);
 
-    const std::array<double, 8> plan_values{
-        gimbal_plan_msg_.target_yaw, gimbal_plan_msg_.target_roll, gimbal_plan_msg_.yaw,
-        gimbal_plan_msg_.yaw_vel,    gimbal_plan_msg_.yaw_acc,     gimbal_plan_msg_.roll,
-        gimbal_plan_msg_.roll_vel,   gimbal_plan_msg_.roll_acc,
-    };
-    const bool output_finite =
-        std::all_of(plan_values.begin(), plan_values.end(),
-                    [](double value) { return std::isfinite(value); });
-    AutoAimReplayBenchmark::RecordAimer(
-        target_msg.image_timestamp_us,
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                  callback_start)
-            .count(),
-        gimbal_plan_msg_.control, final_fire, last_plan_mpc_, output_finite, plan_values);
   };
 
   if (target_msg.id != last_target_id_)
