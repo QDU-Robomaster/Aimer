@@ -343,11 +343,27 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
 }
 
 /**
+ * @brief 输出 tracker 目标回调的累计耗时统计。
+ */
+inline void AimerCore::OnMonitor()
+{
+  const auto summary = target_callback_duration_.GetSummary();
+  XR_LOG_INFO(
+      "Aimer monitor: target_callback count=%llu average_us=%llu "
+      "minimum_us=%llu maximum_us=%llu",
+      static_cast<unsigned long long>(summary.sample_count),
+      static_cast<unsigned long long>(summary.average_us),
+      static_cast<unsigned long long>(summary.minimum_us),
+      static_cast<unsigned long long>(summary.maximum_us));
+}
+
+/**
  * @brief 处理一帧 tracker 目标并发布 host 输出。
  * @param target_msg 当前 tracker 目标消息。
  */
 inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
+  auto target_callback_measurement = target_callback_duration_.Measure();
   const auto callback_start = std::chrono::steady_clock::now();
   AutoAimReplayBenchmark::RecordAimerStart(target_msg.image_timestamp_us);
   gimbal_plan_msg_ = {};
