@@ -74,6 +74,7 @@ depends:
   - qdu-future/ArmorTracker
   - qdu-future/CameraBase
   - qdu-future/VisionPreview
+  - xrobot-org/DurationStatistics
 === END MANIFEST === */
 // clang-format on
 
@@ -86,6 +87,7 @@ depends:
 #include "ArmorTrackerTarget.hpp"
 #include "AutoAimReplayBenchmark.hpp"
 #include "CameraBase.hpp"
+#include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
 #include "VisionPreview.hpp"
 #include "app_framework.hpp"
@@ -317,9 +319,9 @@ class AimerCore : public LibXR::Application
   AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg);
 
   /**
-   * @brief LibXR 应用要求的周期监控钩子。
+   * @brief 输出 tracker 目标回调的累计耗时统计。
    */
-  void OnMonitor() override {}
+  void OnMonitor() override;
 
  protected:
   /**
@@ -410,6 +412,7 @@ class AimerCore : public LibXR::Application
 
  private:
   Config cfg_{};
+  XRobot::DurationStatistics target_callback_duration_{};
   std::atomic<double> bullet_speed_{23.0};
   int lock_id_{-1};
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
