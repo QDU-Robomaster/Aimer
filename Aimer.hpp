@@ -85,7 +85,6 @@ depends:
 #include <utility>
 
 #include "ArmorTrackerTarget.hpp"
-#include "AutoAimReplayBenchmark.hpp"
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"

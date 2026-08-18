@@ -242,33 +242,9 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
                                           AimerShotCandidate& fire_shot_candidate)
 {
   const auto plan_start = std::chrono::steady_clock::now();
-  double reference_ms = AutoAimReplayBenchmark::kNaN;
-  double yaw_ms = AutoAimReplayBenchmark::kNaN;
-  double roll_ms = AutoAimReplayBenchmark::kNaN;
-  bool solver_ran = false;
-  bool output_finite = false;
-  int yaw_rc = -999;
-  int yaw_solved = -1;
-  int yaw_status = -1;
-  int yaw_iterations = -1;
-  int roll_rc = -999;
-  int roll_solved = -1;
-  int roll_status = -1;
-  int roll_iterations = -1;
-  auto record_mpc = [&](bool accepted)
-  {
-    AutoAimReplayBenchmark::RecordMpc(
-        target_msg.image_timestamp_us, solver_ran, output_finite, accepted, yaw_rc,
-        yaw_solved, yaw_status, yaw_iterations, roll_rc, roll_solved, roll_status,
-        roll_iterations, reference_ms, yaw_ms, roll_ms,
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                  plan_start)
-            .count());
-  };
   fire_shot_candidate = {};
   if (!planner_ready_ || yaw_solver_ == nullptr || roll_solver_ == nullptr)
   {
-    record_mpc(false);
     return false;
   }
 
@@ -278,38 +254,22 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg, delay_time, bullet_speed,
                                              lock_id_, reference, yaw0, fire_target))
   {
-    reference_ms = std::chrono::duration<double, std::milli>(
-                       std::chrono::steady_clock::now() - plan_start)
-                       .count();
-    record_mpc(false);
     return false;
   }
   const auto reference_finish = std::chrono::steady_clock::now();
-  reference_ms =
-      std::chrono::duration<double, std::milli>(reference_finish - plan_start).count();
 
   Eigen::VectorXd x0(2);
   x0 << reference(0, 0), reference(1, 0);
   tiny_set_x0(yaw_solver_, x0);
   yaw_solver_->work->Xref = reference.block(0, 0, 2, AimerDetail::PLAN_HORIZON);
-  yaw_rc = tiny_solve(yaw_solver_);
-  yaw_solved = yaw_solver_->solution->solved;
-  yaw_status = yaw_solver_->work->status;
-  yaw_iterations = yaw_solver_->solution->iter;
+  tiny_solve(yaw_solver_);
   const auto yaw_finish = std::chrono::steady_clock::now();
-  yaw_ms =
-      std::chrono::duration<double, std::milli>(yaw_finish - reference_finish).count();
 
   x0 << reference(2, 0), reference(3, 0);
   tiny_set_x0(roll_solver_, x0);
   roll_solver_->work->Xref = reference.block(2, 0, 2, AimerDetail::PLAN_HORIZON);
-  roll_rc = tiny_solve(roll_solver_);
-  roll_solved = roll_solver_->solution->solved;
-  roll_status = roll_solver_->work->status;
-  roll_iterations = roll_solver_->solution->iter;
-  solver_ran = true;
+  tiny_solve(roll_solver_);
   const auto roll_finish = std::chrono::steady_clock::now();
-  roll_ms = std::chrono::duration<double, std::milli>(roll_finish - yaw_finish).count();
 
   const int output_index = AimerDetail::PLAN_HALF_HORIZON;
   AimerDetail::GimbalPlanSample output{};
@@ -324,16 +284,13 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
 
   if (!AimerDetail::IsFiniteGimbalPlanSample(output))
   {
-    record_mpc(false);
     return false;
   }
-  output_finite = true;
 
   const double output_plan_error = AimerDetail::YawRollPlanError(
       output.target_yaw, output.target_roll, output.yaw, output.roll);
   if (output_plan_error > cfg_.mpc_fire_thresh)
   {
-    record_mpc(false);
     return false;
   }
 
@@ -364,7 +321,6 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   gimbal_plan_msg_.roll_vel = static_cast<float>(output.roll_vel);
   gimbal_plan_msg_.roll_acc = static_cast<float>(output.roll_acc);
   last_plan_mpc_ = true;
-  record_mpc(true);
 
   if (cfg_.enable_runtime_log)
   {
