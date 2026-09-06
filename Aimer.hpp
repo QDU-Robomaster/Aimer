@@ -55,21 +55,26 @@ constructor_args:
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
     convert_raw_gimbal_quat_to_body: false
+  calibration:
+    native_width: 1280
+    native_height: 720
+    camera_matrix: [800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0]
+    distortion_model: CameraTypes::DistortionModel::PLUMB_BOB
+    distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+    rectification_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    projection_matrix: [800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 template_args:
-  - Info:
+  - Layout:
       width: 1280
       height: 720
       step: 3840
       encoding: CameraTypes::Encoding::BGR8
-      camera_matrix: [800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0]
-      distortion_model: CameraTypes::DistortionModel::PLUMB_BOB
-      distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
-      rectification_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-      projection_matrix: [800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 required_hardware: []
 depends:
   - qdu-future/ArmorTracker
+  - qdu-future/CameraBase
   - qdu-future/VisionPreview
+  - xrobot-org/DurationStatistics
 === END MANIFEST === */
 // clang-format on
 
@@ -77,9 +82,11 @@ depends:
 #include <atomic>
 #include <cstdint>
 #include <optional>
+#include <utility>
 
-#include "ArmorTracker.hpp"
 #include "ArmorTrackerTarget.hpp"
+#include "CameraBase.hpp"
+#include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
 #include "VisionPreview.hpp"
 #include "app_framework.hpp"
@@ -117,9 +124,9 @@ struct [[gnu::packed]] AimerRefereeGameStatus
 };
 
 /**
- * @brief host/sentry_ref 的比赛旧 BSP 92 字节裁判系统摘要数据。
+ * @brief host/robot_game_ref 的比赛旧 BSP 92 字节裁判系统摘要数据。
  *
- * 该 sentry_ref 实际对应旧比赛 BSP 的 RobotGameRefereePack。Aimer 当前只显式消费
+ * 该 robot_game_ref 实际对应旧比赛 BSP 的 RobotGameRefereePack。Aimer 当前只显式消费
  * RobotStatus/GameStatus 前缀，其余字段保留为不透明尾部，只用于对齐 ABI。
  */
 struct [[gnu::packed]] AimerRefereeSummary
@@ -176,7 +183,7 @@ static_assert(sizeof(AimerHostFireNotify) == 1);
  */
 struct AimerPreviewFrame
 {
-  /// 图像传感器时间戳，单位 us。
+  /// 匹配触发沿的 MCU 陀螺仪时间戳，单位 us。
   uint64_t image_timestamp_us{};
   /// 当前帧是否带有 tracker 目标消息。
   bool have_target{false};
@@ -224,76 +231,76 @@ struct AimerShotCandidate
  */
 struct AimerConfig
 {
-    /// 施加到弹道命令上的固定 yaw 偏置，单位 deg。
-    double yaw_offset{-1.0};
-    /// 施加到机械 roll 轴命令上的固定偏置，单位 deg。
-    double roll_offset{-1.4};
-    /// 低速与旋转策略的 yaw 角速度阈值，单位 rad/s。
-    double yaw_rate_threshold{2.0};
-    /// 弹速异常时使用的默认弹速，单位 m/s。
-    double default_bullet_speed{21.0};
-    /// 可接受的最小裁判系统弹速，单位 m/s。
-    double min_valid_bullet_speed{14.0};
-    /// 二次阻力加速度系数，a_drag = -k * |v| * v。
-    double ballistic_drag_k{0.02};
-    /// RK4 弹道积分步长，单位 s。
-    double ballistic_integration_dt_s{0.001};
-    /// 一维括区求根最大迭代次数。
-    int ballistic_max_iterations{16};
-    /// 允许搜索的最小弹道仰角，单位 deg。
-    double ballistic_min_elevation_deg{-20.0};
-    /// 允许搜索的最大弹道仰角，单位 deg。
-    double ballistic_max_elevation_deg{35.0};
-    /// 是否启用基于实测云台姿态的自动开火门控。
-    bool auto_fire{true};
-    /// 从图像曝光到当前处理时刻的估计延迟。
-    double image_to_now_s{0.0};
-    /// 从视觉输出到命令生成的估计延迟。
-    double vision_to_command_delay_s{0.0};
-    /// 命令传输估计延迟。
-    double command_transport_delay_s{0.0};
-    /// 云台响应估计延迟。
-    double gimbal_response_delay_s{0.0};
-    /// 从开火命令到弹丸出膛的估计延迟。
-    double fire_delay_s{0.0};
-    /// 低速目标的预测延迟补偿。
-    double low_speed_extra_predict_s{0.015};
-    /// yaw 角速度超过阈值时的预测延迟补偿。
-    double high_speed_extra_predict_s{0.03};
-    /// 最小角度开火阈值，单位 rad。
-    double min_fire_threshold{0.003};
-    /// 最大角度开火阈值，单位 rad。
-    double max_fire_threshold{0.05};
-    /// 是否启用 TinyMPC 云台计划。
-    bool enable_mpc_plan{true};
-    /// 允许使用 MPC 输出和开火的最大计划偏离，单位 rad。
-    double mpc_fire_thresh{0.05};
-    /// TinyMPC yaw 加速度约束，单位 rad/s^2。
-    double max_yaw_acc{50.0};
-    /// TinyMPC yaw 位置代价。
-    double q_yaw_pos{9000000.0};
-    /// TinyMPC yaw 速度代价。
-    double q_yaw_vel{0.0};
-    /// TinyMPC yaw 加速度代价。
-    double r_yaw_acc{1.0};
-    /// TinyMPC roll 轴加速度约束，单位 rad/s^2。
-    double max_roll_acc{100.0};
-    /// TinyMPC roll 轴位置代价。
-    double q_roll_pos{9000000.0};
-    /// TinyMPC roll 轴速度代价。
-    double q_roll_vel{0.0};
-    /// TinyMPC roll 轴加速度代价。
-    double r_roll_acc{1.0};
-    /// Aimer 内置实时预览运行参数。
-    VisionPreview::RuntimeParam preview{};
-    /// 是否输出运行期统计日志。
-    bool enable_runtime_log{true};
-    /// 弹速变化超过该阈值时打印反馈日志，单位 m/s。
-    double bullet_speed_log_delta{0.05};
-    /// 热量变化超过该阈值时打印反馈日志。
-    double heat_log_delta{1.0};
-    /// 是否把原始 x 前、y 左、z 上的 ahrs_quaternion 转到公开 body 轴。
-    bool convert_raw_gimbal_quat_to_body{false};
+  /// 施加到弹道命令上的固定 yaw 偏置，单位 deg。
+  double yaw_offset{-1.0};
+  /// 施加到机械 roll 轴命令上的固定偏置，单位 deg。
+  double roll_offset{-1.4};
+  /// 低速与旋转策略的 yaw 角速度阈值，单位 rad/s。
+  double yaw_rate_threshold{2.0};
+  /// 弹速异常时使用的默认弹速，单位 m/s。
+  double default_bullet_speed{21.0};
+  /// 可接受的最小裁判系统弹速，单位 m/s。
+  double min_valid_bullet_speed{14.0};
+  /// 二次阻力加速度系数，a_drag = -k * |v| * v。
+  double ballistic_drag_k{0.02};
+  /// RK4 弹道积分步长，单位 s。
+  double ballistic_integration_dt_s{0.001};
+  /// 一维括区求根最大迭代次数。
+  int ballistic_max_iterations{16};
+  /// 允许搜索的最小弹道仰角，单位 deg。
+  double ballistic_min_elevation_deg{-20.0};
+  /// 允许搜索的最大弹道仰角，单位 deg。
+  double ballistic_max_elevation_deg{35.0};
+  /// 是否启用基于实测云台姿态的自动开火门控。
+  bool auto_fire{true};
+  /// 从图像曝光到当前处理时刻的估计延迟。
+  double image_to_now_s{0.0};
+  /// 从视觉输出到命令生成的估计延迟。
+  double vision_to_command_delay_s{0.0};
+  /// 命令传输估计延迟。
+  double command_transport_delay_s{0.0};
+  /// 云台响应估计延迟。
+  double gimbal_response_delay_s{0.0};
+  /// 从开火命令到弹丸出膛的估计延迟。
+  double fire_delay_s{0.0};
+  /// 低速目标的预测延迟补偿。
+  double low_speed_extra_predict_s{0.015};
+  /// yaw 角速度超过阈值时的预测延迟补偿。
+  double high_speed_extra_predict_s{0.03};
+  /// 最小角度开火阈值，单位 rad。
+  double min_fire_threshold{0.003};
+  /// 最大角度开火阈值，单位 rad。
+  double max_fire_threshold{0.05};
+  /// 是否启用 TinyMPC 云台计划。
+  bool enable_mpc_plan{true};
+  /// 允许使用 MPC 输出和开火的最大计划偏离，单位 rad。
+  double mpc_fire_thresh{0.05};
+  /// TinyMPC yaw 加速度约束，单位 rad/s^2。
+  double max_yaw_acc{50.0};
+  /// TinyMPC yaw 位置代价。
+  double q_yaw_pos{9000000.0};
+  /// TinyMPC yaw 速度代价。
+  double q_yaw_vel{0.0};
+  /// TinyMPC yaw 加速度代价。
+  double r_yaw_acc{1.0};
+  /// TinyMPC roll 轴加速度约束，单位 rad/s^2。
+  double max_roll_acc{100.0};
+  /// TinyMPC roll 轴位置代价。
+  double q_roll_pos{9000000.0};
+  /// TinyMPC roll 轴速度代价。
+  double q_roll_vel{0.0};
+  /// TinyMPC roll 轴加速度代价。
+  double r_roll_acc{1.0};
+  /// Aimer 内置实时预览运行参数。
+  VisionPreview::RuntimeParam preview{};
+  /// 是否输出运行期统计日志。
+  bool enable_runtime_log{true};
+  /// 弹速变化超过该阈值时打印反馈日志，单位 m/s。
+  double bullet_speed_log_delta{0.05};
+  /// 热量变化超过该阈值时打印反馈日志。
+  double heat_log_delta{1.0};
+  /// 是否把原始 x 前、y 左、z 上的 ahrs_quaternion 转到公开 body 轴。
+  bool convert_raw_gimbal_quat_to_body{false};
 };
 
 /**
@@ -308,13 +315,12 @@ class AimerCore : public LibXR::Application
   /**
    * @brief 创建 Aimer 运行核心并注册裁判系统和云台反馈回调。
    */
-  AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
-            Config cfg);
+  AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg);
 
   /**
-   * @brief LibXR 应用要求的周期监控钩子。
+   * @brief 输出 tracker 目标回调的累计耗时统计。
    */
-  void OnMonitor() override {}
+  void OnMonitor() override;
 
  protected:
   /**
@@ -363,8 +369,7 @@ class AimerCore : public LibXR::Application
   /**
    * @brief 在自动开火状态翻转时输出统计日志。
    */
-  void LogFireState(const ArmorTrackerTarget& target_msg, bool fire,
-                    double bullet_speed);
+  void LogFireState(const ArmorTrackerTarget& target_msg, bool fire, double bullet_speed);
   /**
    * @brief 更新最新实测云台旋转。
    */
@@ -376,8 +381,8 @@ class AimerCore : public LibXR::Application
   /**
    * @brief 根据计划命令稳定性和云台两轴对准情况评估自动开火门控。
    */
-  bool ShouldAutoFire(const AimerShotCandidate& shot_candidate,
-                      bool plan_fire_enabled, double yaw, double roll);
+  bool ShouldAutoFire(const AimerShotCandidate& shot_candidate, bool plan_fire_enabled,
+                      double yaw, double roll);
   /**
    * @brief 初始化 yaw 和 roll 轴 TinyMPC 求解器。
    */
@@ -385,21 +390,18 @@ class AimerCore : public LibXR::Application
   /**
    * @brief 尝试为当前目标构建 TinyMPC 云台计划。
    */
-  bool BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
-                          double delay_time, double bullet_speed,
-                          AimerShotCandidate& fire_shot_candidate);
+  bool BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg, double delay_time,
+                          double bullet_speed, AimerShotCandidate& fire_shot_candidate);
   /**
    * @brief 在 TinyMPC 关闭或不可用时构建直接 yaw/roll 计划。
    */
-  void BuildFiniteDifferenceGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                       bool control, bool fire_enabled,
-                                       double yaw, double roll);
+  void BuildFiniteDifferenceGimbalPlan(const ArmorTrackerTarget& target_msg, bool control,
+                                       bool fire_enabled, double yaw, double roll);
   /**
    * @brief 在 TinyMPC 和直接云台计划之间选择。
    */
   void BuildGimbalPlan(const ArmorTrackerTarget& target_msg, double delay_time,
-                       bool control, double yaw, double roll,
-                       double bullet_speed,
+                       bool control, double yaw, double roll, double bullet_speed,
                        const AimerShotCandidate& direct_shot_candidate,
                        AimerShotCandidate& fire_shot_candidate);
   /**
@@ -409,6 +411,7 @@ class AimerCore : public LibXR::Application
 
  private:
   Config cfg_{};
+  XRobot::DurationStatistics target_callback_duration_{};
   std::atomic<double> bullet_speed_{23.0};
   int lock_id_{-1};
   ArmorNumber last_target_id_{ArmorNumber::INVALID};
@@ -450,27 +453,30 @@ class AimerCore : public LibXR::Application
 /**
  * @brief Aimer 对外 xrobot 模块，消费 tracker 同源目标帧并内联持有实时预览。
  */
-template <CameraTypes::CameraInfo CameraInfoV>
+template <CameraTypes::FrameLayout FrameLayoutV>
 class Aimer : public AimerCore
 {
  public:
   using Config = AimerConfig;
-  using TargetFramePacket = ArmorTrackerTargetFramePacket<CameraInfoV>;
-  using TargetFrameMessage = ArmorTrackerTargetFrameMessage<CameraInfoV>;
-  using SourceFrame = ArmorDetectionsSourceFrame<CameraInfoV>;
+  using CameraCalibration = CameraTypes::CameraCalibration;
+  using TargetFrame = TrackedFrame<FrameLayoutV>;
+  using TargetFrameMessage = TrackedFrameMessage<FrameLayoutV>;
 
-  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg)
-      : AimerCore(hw, app, cfg)
+  /**
+   * @brief 构造瞄准模块，并固定预览使用的原生相机标定。
+   *
+   * @param calibration 原生传感器坐标系下的不可变相机标定，按值持有。
+   */
+  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg,
+        CameraCalibration calibration)
+      : AimerCore(hw, app, cfg), calibration_(std::move(calibration))
   {
+    ASSERT(CameraBaseIntrinsicSanity::CameraCalibrationReasonable(calibration_));
     if (cfg.preview.enabled)
     {
-      preview_.emplace(hw, app, AimerDetail::MakeAimerPreviewConfig(cfg));
-      SetPreviewSink(
-          [](void* context, const AimerPreviewFrame& frame)
-          {
-            static_cast<Aimer*>(context)->SubmitPreviewFrame(frame);
-          },
-          this);
+      preview_.emplace(hw, app, AimerDetail::MakeAimerPreviewConfig(cfg), calibration_);
+      SetPreviewSink([](void* context, const AimerPreviewFrame& frame)
+                     { static_cast<Aimer*>(context)->SubmitPreviewFrame(frame); }, this);
     }
     RegisterTargetFrameCallback();
   }
@@ -483,18 +489,15 @@ class Aimer : public AimerCore
   {
     LibXR::Topic::Domain tracker_domain("tracker");
     target_frame_topic_ =
-        LibXR::Topic::FindOrCreate<TargetFrameMessage>("target_frame",
-                                                       &tracker_domain);
+        LibXR::Topic::FindOrCreate<TargetFrameMessage>("target_frame", &tracker_domain);
     auto callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, LibXR::RawData& data)
+        [](bool, Aimer* self, const TargetFrameMessage& message)
         {
-          auto* message = reinterpret_cast<TargetFrameMessage*>(data.addr_);
-          if (message == nullptr || data.size_ != sizeof(TargetFrameMessage) ||
-              *message == nullptr || (*message)->target == nullptr)
+          if (message == nullptr || !message->Valid())
           {
             return;
           }
-          self->TargetFrameCallback(**message);
+          self->TargetFrameCallback(*message);
         },
         this);
     target_frame_topic_.RegisterCallback(callback);
@@ -503,18 +506,11 @@ class Aimer : public AimerCore
   /**
    * @brief 处理 tracker 同帧目标和源图像。
    */
-  void TargetFrameCallback(const TargetFramePacket& frame)
+  void TargetFrameCallback(const TargetFrame& frame)
   {
     current_target_frame_ = &frame;
-    if (frame.source_frame.imu != nullptr)
-    {
-      UpdateGimbalRotationFromSyncedImu(frame.source_frame.imu->rotation_wxyz);
-    }
-    else
-    {
-      ClearGimbalRotation();
-    }
-    TargetCallback(*frame.target);
+    UpdateGimbalRotationFromSyncedImu(frame.imu.rotation_wxyz);
+    TargetCallback(frame.target);
     current_target_frame_ = nullptr;
   }
 
@@ -530,6 +526,7 @@ class Aimer : public AimerCore
   }
 
   LibXR::Topic target_frame_topic_ = LibXR::Topic();
-  const TargetFramePacket* current_target_frame_{nullptr};
-  std::optional<AimerPreview<CameraInfoV>> preview_;
+  const TargetFrame* current_target_frame_{nullptr};
+  const CameraCalibration calibration_;
+  std::optional<AimerPreview<FrameLayoutV>> preview_;
 };

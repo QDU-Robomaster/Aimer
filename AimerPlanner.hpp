@@ -5,12 +5,11 @@
  * @brief TinyMPC 和直接云台计划生成。
  */
 
+#include <Eigen/Dense>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
-
-#include <Eigen/Dense>
 
 #include "AimerTargetModel.hpp"
 #include "logger.hpp"
@@ -49,10 +48,9 @@ struct GimbalPlanSample
  * @brief 计算 yaw/roll 两轴计划偏差。
  */
 inline double YawRollPlanError(double reference_yaw, double reference_roll,
-                                double planned_yaw, double planned_roll)
+                               double planned_yaw, double planned_roll)
 {
-  return std::hypot(LimitRad(reference_yaw - planned_yaw),
-                    reference_roll - planned_roll);
+  return std::hypot(LimitRad(reference_yaw - planned_yaw), reference_roll - planned_roll);
 }
 
 /**
@@ -72,8 +70,7 @@ inline bool IsFiniteGimbalPlanSample(const GimbalPlanSample& sample)
 inline int PlanFireIndex(const AimerConfig& cfg)
 {
   int fire_offset =
-      static_cast<int>(std::llround(std::max(0.0, cfg.fire_delay_s) /
-                                    PLAN_DEFAULT_DT_S));
+      static_cast<int>(std::llround(std::max(0.0, cfg.fire_delay_s) / PLAN_DEFAULT_DT_S));
   if (fire_offset == 0)
   {
     fire_offset = PLAN_SHOOT_OFFSET;
@@ -96,9 +93,8 @@ inline int PlanFireIndex(const AimerConfig& cfg)
 inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
                                      const ArmorTrackerTarget& target_msg,
                                      double delay_time, double bullet_speed,
-                                     int initial_lock_id,
-                                     PlanTrajectory& trajectory, double& yaw0,
-                                     PredictedTarget& fire_target)
+                                     int initial_lock_id, PlanTrajectory& trajectory,
+                                     double& yaw0, PredictedTarget& fire_target)
 {
   bool fire_target_ready = false;
   PredictedTarget center_target{target_msg};
@@ -153,9 +149,8 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
     const double yaw_vel =
         LimitRad(yaw_roll_next.yaw_roll.x() - yaw_roll_last.yaw_roll.x()) /
         (2.0 * PLAN_DEFAULT_DT_S);
-    const double roll_vel =
-        (yaw_roll_next.yaw_roll.y() - yaw_roll_last.yaw_roll.y()) /
-        (2.0 * PLAN_DEFAULT_DT_S);
+    const double roll_vel = (yaw_roll_next.yaw_roll.y() - yaw_roll_last.yaw_roll.y()) /
+                            (2.0 * PLAN_DEFAULT_DT_S);
     trajectory.col(index) << LimitRad(yaw_roll.yaw_roll.x() - yaw0), yaw_vel,
         yaw_roll.yaw_roll.y(), roll_vel;
     if (index == fire_index)
@@ -197,20 +192,19 @@ inline void AimerCore::SetupGimbalPlanSolvers()
     Eigen::MatrixXd r(1, 1);
     r << r_acc;
 
-    if (tiny_setup(solver, a, b, f, q, r, 1.0, 2, 1,
-                   AimerDetail::PLAN_HORIZON, 0) != 0)
+    if (tiny_setup(solver, a, b, f, q, r, 1.0, 2, 1, AimerDetail::PLAN_HORIZON, 0) != 0)
     {
       return false;
     }
 
-    Eigen::MatrixXd x_min = Eigen::MatrixXd::Constant(
-        2, AimerDetail::PLAN_HORIZON, -1.0e17);
-    Eigen::MatrixXd x_max = Eigen::MatrixXd::Constant(
-        2, AimerDetail::PLAN_HORIZON, 1.0e17);
-    Eigen::MatrixXd u_min = Eigen::MatrixXd::Constant(
-        1, AimerDetail::PLAN_HORIZON - 1, -max_acc);
-    Eigen::MatrixXd u_max = Eigen::MatrixXd::Constant(
-        1, AimerDetail::PLAN_HORIZON - 1, max_acc);
+    Eigen::MatrixXd x_min =
+        Eigen::MatrixXd::Constant(2, AimerDetail::PLAN_HORIZON, -1.0e17);
+    Eigen::MatrixXd x_max =
+        Eigen::MatrixXd::Constant(2, AimerDetail::PLAN_HORIZON, 1.0e17);
+    Eigen::MatrixXd u_min =
+        Eigen::MatrixXd::Constant(1, AimerDetail::PLAN_HORIZON - 1, -max_acc);
+    Eigen::MatrixXd u_max =
+        Eigen::MatrixXd::Constant(1, AimerDetail::PLAN_HORIZON - 1, max_acc);
     if (tiny_set_bound_constraints(*solver, x_min, x_max, u_min, u_max) != 0)
     {
       return false;
@@ -220,26 +214,22 @@ inline void AimerCore::SetupGimbalPlanSolvers()
     return true;
   };
 
-  const bool yaw_ok =
-      setup_solver(&yaw_solver_, cfg_.max_yaw_acc, cfg_.q_yaw_pos, cfg_.q_yaw_vel,
-                   cfg_.r_yaw_acc);
-  const bool roll_ok = setup_solver(&roll_solver_, cfg_.max_roll_acc,
-                                    cfg_.q_roll_pos, cfg_.q_roll_vel,
-                                    cfg_.r_roll_acc);
+  const bool yaw_ok = setup_solver(&yaw_solver_, cfg_.max_yaw_acc, cfg_.q_yaw_pos,
+                                   cfg_.q_yaw_vel, cfg_.r_yaw_acc);
+  const bool roll_ok = setup_solver(&roll_solver_, cfg_.max_roll_acc, cfg_.q_roll_pos,
+                                    cfg_.q_roll_vel, cfg_.r_roll_acc);
   planner_ready_ = yaw_ok && roll_ok;
   if (!planner_ready_)
   {
-    XR_LOG_WARN("Aimer TinyMPC gimbal_plan setup failed; finite-difference fallback active");
+    XR_LOG_WARN(
+        "Aimer TinyMPC gimbal_plan setup failed; finite-difference fallback active");
   }
 }
 
 /**
  * @brief 在目标状态不连续时清理规划器缓存。
  */
-inline void AimerCore::ResetGimbalPlanHistory()
-{
-  last_plan_mpc_ = false;
-}
+inline void AimerCore::ResetGimbalPlanHistory() { last_plan_mpc_ = false; }
 
 /**
  * @brief 尝试求解并生成 TinyMPC 云台计划。
@@ -261,9 +251,8 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   AimerDetail::PlanTrajectory reference{};
   double yaw0 = 0.0;
   AimerDetail::PredictedTarget fire_target{};
-  if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg, delay_time,
-                                             bullet_speed, lock_id_, reference, yaw0,
-                                             fire_target))
+  if (!AimerDetail::BuildReferenceTrajectory(cfg_, target_msg, delay_time, bullet_speed,
+                                             lock_id_, reference, yaw0, fire_target))
   {
     return false;
   }
@@ -306,24 +295,23 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
   }
 
   const int fire_index = AimerDetail::PlanFireIndex(cfg_);
-  const double planned_fire_yaw = AimerDetail::LimitRad(
-      yaw_solver_->work->x(0, fire_index) + yaw0);
+  const double planned_fire_yaw =
+      AimerDetail::LimitRad(yaw_solver_->work->x(0, fire_index) + yaw0);
   const double planned_fire_roll = roll_solver_->work->x(0, fire_index);
   fire_shot_candidate = AimerDetail::ChooseShotCandidateForCommand(
       cfg_, fire_target, bullet_speed, planned_fire_yaw, planned_fire_roll);
   const double shot_plan_error =
-      fire_shot_candidate.valid
-          ? AimerDetail::YawRollPlanError(
-                fire_shot_candidate.yaw, fire_shot_candidate.roll,
-                planned_fire_yaw, planned_fire_roll)
-          : std::numeric_limits<double>::infinity();
+      fire_shot_candidate.valid ? AimerDetail::YawRollPlanError(
+                                      fire_shot_candidate.yaw, fire_shot_candidate.roll,
+                                      planned_fire_yaw, planned_fire_roll)
+                                : std::numeric_limits<double>::infinity();
 
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   gimbal_plan_msg_.control = true;
   gimbal_plan_msg_.fire = fire_shot_candidate.valid &&
-                           fire_shot_candidate.face_shootable_at_hit &&
-                           shot_plan_error < cfg_.mpc_fire_thresh;
+                          fire_shot_candidate.face_shootable_at_hit &&
+                          shot_plan_error < cfg_.mpc_fire_thresh;
   gimbal_plan_msg_.target_yaw = static_cast<float>(output.target_yaw);
   gimbal_plan_msg_.target_roll = static_cast<float>(output.target_roll);
   gimbal_plan_msg_.yaw = static_cast<float>(output.yaw);
@@ -340,16 +328,19 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
     ++plan_timing_log_counter;
     if ((plan_timing_log_counter % 30ULL) == 0ULL)
     {
-      const double ref_ms = std::chrono::duration<double, std::milli>(
-          reference_finish - plan_start).count();
-      const double yaw_ms = std::chrono::duration<double, std::milli>(
-          yaw_finish - reference_finish).count();
-      const double roll_ms = std::chrono::duration<double, std::milli>(
-          roll_finish - yaw_finish).count();
-      const double total_ms = std::chrono::duration<double, std::milli>(
-          roll_finish - plan_start).count();
+      const double ref_ms =
+          std::chrono::duration<double, std::milli>(reference_finish - plan_start)
+              .count();
+      const double yaw_ms =
+          std::chrono::duration<double, std::milli>(yaw_finish - reference_finish)
+              .count();
+      const double roll_ms =
+          std::chrono::duration<double, std::milli>(roll_finish - yaw_finish).count();
+      const double total_ms =
+          std::chrono::duration<double, std::milli>(roll_finish - plan_start).count();
       XR_LOG_INFO(
-          "Aimer plan timing ref_ms=%.3f yaw_mpc_ms=%.3f roll_mpc_ms=%.3f total_ms=%.3f output_err=%.4f shot_err=%.4f fire=%d",
+          "Aimer plan timing ref_ms=%.3f yaw_mpc_ms=%.3f roll_mpc_ms=%.3f total_ms=%.3f "
+          "output_err=%.4f shot_err=%.4f fire=%d",
           ref_ms, yaw_ms, roll_ms, total_ms, output_plan_error, shot_plan_error,
           gimbal_plan_msg_.fire ? 1 : 0);
     }
@@ -366,8 +357,8 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
  * @param roll 命令 roll 轴，单位 rad。
  */
 inline void AimerCore::BuildFiniteDifferenceGimbalPlan(
-    const ArmorTrackerTarget& target_msg, bool control, bool fire_enabled,
-    double yaw, double roll)
+    const ArmorTrackerTarget& target_msg, bool control, bool fire_enabled, double yaw,
+    double roll)
 {
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
@@ -396,8 +387,8 @@ inline void AimerCore::BuildFiniteDifferenceGimbalPlan(
  * @param bullet_speed 弹速，单位 m/s。
  */
 inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
-                                       double delay_time, bool control,
-                                       double yaw, double roll, double bullet_speed,
+                                       double delay_time, bool control, double yaw,
+                                       double roll, double bullet_speed,
                                        const AimerShotCandidate& direct_shot_candidate,
                                        AimerShotCandidate& fire_shot_candidate)
 {
@@ -408,8 +399,7 @@ inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
     return;
   }
 
-  if (BuildMpcGimbalPlan(target_msg, delay_time, bullet_speed,
-                         fire_shot_candidate))
+  if (BuildMpcGimbalPlan(target_msg, delay_time, bullet_speed, fire_shot_candidate))
   {
     return;
   }
@@ -417,6 +407,6 @@ inline void AimerCore::BuildGimbalPlan(const ArmorTrackerTarget& target_msg,
   fire_shot_candidate = direct_shot_candidate;
   BuildFiniteDifferenceGimbalPlan(
       target_msg, true,
-      direct_shot_candidate.valid && direct_shot_candidate.face_shootable_at_hit,
-      yaw, roll);
+      direct_shot_candidate.valid && direct_shot_candidate.face_shootable_at_hit, yaw,
+      roll);
 }

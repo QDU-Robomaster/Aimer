@@ -97,17 +97,56 @@ jobs:
           cat Modules/sources.yaml
           cat Modules/modules.yaml
 
+      - name: Add current manifest dependencies to module config
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          import yaml
+          from xrobot.ModuleParser import load_single_module
+
+          module_path = Path("Modules") / os.environ["XR_MODULE_NAME"]
+          manifest = load_single_module(module_path)
+          if manifest is None:
+              raise SystemExit(f"manifest not found: {module_path}")
+
+          config_path = Path("Modules/modules.yaml")
+          config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+          modules = config.setdefault("modules", [])
+          current_module = f"qdu-future/{os.environ['XR_MODULE_NAME']}"
+          modules[:] = [
+              module for module in modules
+              if str(module).split("@", 1)[0] != current_module
+          ]
+          for dependency in manifest.depends:
+              if dependency not in modules:
+                  modules.append(dependency)
+          config_path.write_text(
+              yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+              encoding="utf-8",
+          )
+          print("direct manifest dependencies:", manifest.depends)
+          PY
+
       - name: Sync module repos from MANIFEST dependencies
         run: xrobot_init_mod
 
-      - name: Restore current module checkout
-        run: rm -rf Modules/${{ env.XR_MODULE_NAME }}
-
-      - name: Checkout current module repo again
-        uses: actions/checkout@v4
-        with:
-          path: Modules/${{ env.XR_MODULE_NAME }}
-          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Align coordinated dependency branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          for module_dir in Modules/*; do
+            [[ -d "${module_dir}" ]] || continue
+            [[ "$(basename "${module_dir}")" == "${XR_MODULE_NAME}" ]] && continue
+            git -C "${module_dir}" rev-parse --git-dir >/dev/null 2>&1 || continue
+            if git -C "${module_dir}" ls-remote --exit-code --heads origin "refs/heads/${candidate}" >/dev/null 2>&1; then
+              git -C "${module_dir}" fetch --depth=1 origin "refs/heads/${candidate}"
+              git -C "${module_dir}" checkout --detach FETCH_HEAD
+              git -C "${module_dir}" submodule update --init --recursive --depth=1
+            fi
+          done
 
       - name: Create module config from MANIFEST defaults
         run: |
@@ -130,13 +169,20 @@ jobs:
           cd build
           cmake .. \
             -DOpenVINO_DIR=/opt/intel/openvino_2025.4.0/runtime/cmake \
+            -DBUILD_TESTING=ON \
             -DLIBXR_PRINT_INTEGER_ENABLE_64BIT=ON \
             -DLIBXR_PRINT_FLOAT_ENABLE_DOUBLE=ON \
             -DLIBXR_PRINT_ENABLE_POINTER=ON
           make
 
+      - name: Run geometry tests
+        run: >-
+          ctest --test-dir build/libxr --output-on-failure
+          --no-tests=error
+          -R '^aimer_preview_geometry_test$'
+
       - name: Create Tag via GitHub API
-        if: ${{ success() && github.event_name != 'pull_request' }}
+        if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

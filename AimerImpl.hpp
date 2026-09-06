@@ -47,20 +47,15 @@ inline void AimerCore::PublishPreviewState(const AimerPreviewFrame& state)
 /**
  * @brief 注册裁判系统与云台姿态输入回调。
  */
-inline void AimerCore::RegisterHostInputCallbacks()
-{
-  RegisterRefereeSummaryInput();
-}
+inline void AimerCore::RegisterHostInputCallbacks() { RegisterRefereeSummaryInput(); }
 
 inline void AimerCore::UpdateGimbalRotationFromSyncedImu(
     const std::array<float, 4>& rotation_wxyz)
 {
   LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
   gimbal_rotation_ = LibXR::Quaternion<double>(
-      static_cast<double>(rotation_wxyz[0]),
-      static_cast<double>(rotation_wxyz[1]),
-      static_cast<double>(rotation_wxyz[2]),
-      static_cast<double>(rotation_wxyz[3]));
+      static_cast<double>(rotation_wxyz[0]), static_cast<double>(rotation_wxyz[1]),
+      static_cast<double>(rotation_wxyz[2]), static_cast<double>(rotation_wxyz[3]));
   has_gimbal_rotation_ = true;
 }
 
@@ -76,21 +71,11 @@ inline void AimerCore::ClearGimbalRotation()
  */
 inline void AimerCore::RegisterGimbalQuatInput()
 {
-  LibXR::Topic topic =
-      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("ahrs_quaternion",
-                                                           &host_domain_);
+  LibXR::Topic topic = LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>(
+      "ahrs_quaternion", &host_domain_);
   auto callback = LibXR::Topic::Callback::Create(
-      [](bool, AimerCore* self, LibXR::RawData& data)
-      {
-        auto* rotation_msg =
-            reinterpret_cast<LibXR::Quaternion<float>*>(data.addr_);
-        if (rotation_msg != nullptr &&
-            data.size_ == sizeof(LibXR::Quaternion<float>))
-        {
-          self->GimbalRotationCallback(*rotation_msg);
-        }
-      },
-      this);
+      [](bool, AimerCore* self, const LibXR::Quaternion<float>& rotation)
+      { self->GimbalRotationCallback(rotation); }, this);
   topic.RegisterCallback(callback);
 }
 
@@ -100,18 +85,10 @@ inline void AimerCore::RegisterGimbalQuatInput()
 inline void AimerCore::RegisterRefereeSummaryInput()
 {
   LibXR::Topic referee_topic =
-      LibXR::Topic::FindOrCreate<AimerRefereeSummary>("sentry_ref",
-                                                      &host_domain_);
+      LibXR::Topic::FindOrCreate<AimerRefereeSummary>("robot_game_ref", &host_domain_);
   auto referee_callback = LibXR::Topic::Callback::Create(
-      [](bool, AimerCore* self, LibXR::RawData& data)
-      {
-        auto* summary = reinterpret_cast<AimerRefereeSummary*>(data.addr_);
-        if (summary != nullptr && data.size_ == sizeof(AimerRefereeSummary))
-        {
-          self->RefereeSummaryCallback(*summary);
-        }
-      },
-      this);
+      [](bool, AimerCore* self, const AimerRefereeSummary& summary)
+      { self->RefereeSummaryCallback(summary); }, this);
   referee_topic.RegisterCallback(referee_callback);
 }
 
@@ -135,17 +112,16 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
   }
 
   LibXR::Mutex::LockGuard lock(runtime_log_lock_);
-  const bool should_log =
-      !have_logged_bullet_speed_ ||
-      std::abs(new_bullet_speed - last_logged_bullet_speed_) >=
-          std::max(0.0, cfg_.bullet_speed_log_delta);
+  const bool should_log = !have_logged_bullet_speed_ ||
+                          std::abs(new_bullet_speed - last_logged_bullet_speed_) >=
+                              std::max(0.0, cfg_.bullet_speed_log_delta);
   if (!should_log)
   {
     return;
   }
 
-  XR_LOG_INFO("Aimer bullet_speed source=%s speed=%.2f m/s prev=%.2f m/s",
-              source, new_bullet_speed,
+  XR_LOG_INFO("Aimer bullet_speed source=%s speed=%.2f m/s prev=%.2f m/s", source,
+              new_bullet_speed,
               have_logged_bullet_speed_ ? last_logged_bullet_speed_ : old_bullet_speed);
   last_logged_bullet_speed_ = new_bullet_speed;
   have_logged_bullet_speed_ = true;
@@ -156,19 +132,18 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
  */
 inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
-  UpdateBulletSpeed(cfg_.default_bullet_speed, "host/sentry_ref");
+  UpdateBulletSpeed(cfg_.default_bullet_speed, "host/robot_game_ref");
   LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
                 static_cast<double>(summary.robot_status.shooter_heat_limit),
                 static_cast<double>(summary.robot_status.shooter_cooling_value),
-                "host/sentry_ref", false);
+                "host/robot_game_ref", false);
 }
 
 /**
  * @brief 按变化量记录热量、热量上限和冷却值。
  */
 inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
-                                     double cooling, const char* source,
-                                     bool force)
+                                     double cooling, const char* source, bool force)
 {
   if (!cfg_.enable_runtime_log)
   {
@@ -182,18 +157,18 @@ inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
   bool should_log = force || !have_logged_heat_status_;
   if (!should_log && current_valid)
   {
-    should_log = std::abs(current_heat - last_logged_heat_) >=
-        std::max(0.0, cfg_.heat_log_delta);
+    should_log =
+        std::abs(current_heat - last_logged_heat_) >= std::max(0.0, cfg_.heat_log_delta);
   }
   if (!should_log && heat_limit_valid)
   {
     should_log = std::abs(heat_limit - last_logged_heat_limit_) >=
-        std::max(0.0, cfg_.heat_log_delta);
+                 std::max(0.0, cfg_.heat_log_delta);
   }
   if (!should_log && cooling_valid)
   {
-    should_log = std::abs(cooling - last_logged_cooling_) >=
-        std::max(0.0, cfg_.heat_log_delta);
+    should_log =
+        std::abs(cooling - last_logged_cooling_) >= std::max(0.0, cfg_.heat_log_delta);
   }
   if (!should_log)
   {
@@ -210,9 +185,9 @@ inline void AimerCore::LogHeatStatus(double current_heat, double heat_limit,
   }
   else
   {
-    XR_LOG_INFO("Aimer heat source=%s heat=unknown limit=%.1f cooling=%.1f bullet=%.2f m/s",
-                source, heat_limit, cooling,
-                bullet_speed_.load(std::memory_order_relaxed));
+    XR_LOG_INFO(
+        "Aimer heat source=%s heat=unknown limit=%.1f cooling=%.1f bullet=%.2f m/s",
+        source, heat_limit, cooling, bullet_speed_.load(std::memory_order_relaxed));
   }
   last_logged_heat_limit_ = heat_limit;
   last_logged_cooling_ = cooling;
@@ -239,19 +214,19 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
   if (have_logged_current_heat_)
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
-        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
-        target_msg.tracking ? 1 : 0,
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
+        "bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
+        fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
-        last_logged_heat_, last_logged_heat_limit_, last_logged_cooling_);
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed, last_logged_heat_,
+        last_logged_heat_limit_, last_logged_cooling_);
   }
   else if (have_logged_heat_status_)
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f bullet=%.2f heat=unknown limit=%.1f cooling=%.1f",
-        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
-        target_msg.tracking ? 1 : 0,
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
+        "bullet=%.2f heat=unknown limit=%.1f cooling=%.1f",
+        fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
         gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
         last_logged_heat_limit_, last_logged_cooling_);
@@ -259,9 +234,9 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
   else
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f bullet=%.2f",
-        fire ? "ON" : "OFF", static_cast<int>(target_msg.id),
-        target_msg.tracking ? 1 : 0,
+        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
+        "bullet=%.2f",
+        fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
         gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed);
   }
@@ -273,22 +248,22 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
  * @brief 根据云台姿态消息更新内部姿态缓存。
  * @param gimbal_rotation_msg 云台姿态四元数。
  */
-inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg)
+inline void AimerCore::GimbalRotationCallback(
+    LibXR::Quaternion<float> gimbal_rotation_msg)
 {
   LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
   if (cfg_.convert_raw_gimbal_quat_to_body)
   {
-    gimbal_rotation_ =
-        LibXR::Quaternion<double>(gimbal_rotation_msg.w(),
-                                  -static_cast<double>(gimbal_rotation_msg.y()),
-                                  static_cast<double>(gimbal_rotation_msg.x()),
-                                  static_cast<double>(gimbal_rotation_msg.z()));
+    gimbal_rotation_ = LibXR::Quaternion<double>(
+        gimbal_rotation_msg.w(), -static_cast<double>(gimbal_rotation_msg.y()),
+        static_cast<double>(gimbal_rotation_msg.x()),
+        static_cast<double>(gimbal_rotation_msg.z()));
   }
   else
   {
-    gimbal_rotation_ = LibXR::Quaternion<double>(
-        gimbal_rotation_msg.w(), gimbal_rotation_msg.x(),
-        gimbal_rotation_msg.y(), gimbal_rotation_msg.z());
+    gimbal_rotation_ =
+        LibXR::Quaternion<double>(gimbal_rotation_msg.w(), gimbal_rotation_msg.x(),
+                                  gimbal_rotation_msg.y(), gimbal_rotation_msg.z());
   }
   has_gimbal_rotation_ = true;
 }
@@ -302,8 +277,7 @@ inline void AimerCore::GimbalRotationCallback(LibXR::Quaternion<float> gimbal_ro
  * @return 所有开火门控通过时返回 true。
  */
 inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
-                                      bool plan_fire_enabled, double yaw,
-                                      double roll)
+                                      bool plan_fire_enabled, double yaw, double roll)
 {
   auto remember_command = [this, yaw, roll]()
   {
@@ -320,13 +294,10 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
 
   const Eigen::Vector3d target_xyz = shot_candidate.hit_xyza.head<3>();
   const double yaw_threshold =
-      AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz,
-                                           shot_candidate.view_angle);
-  const double roll_threshold =
-      AimerDetail::DynamicRollFireThreshold(cfg_, target_xyz);
+      AimerDetail::DynamicYawFireThreshold(cfg_, target_xyz, shot_candidate.view_angle);
+  const double roll_threshold = AimerDetail::DynamicRollFireThreshold(cfg_, target_xyz);
 
-  if (!cfg_.auto_fire || !plan_fire_enabled ||
-      !shot_candidate.face_shootable_at_hit)
+  if (!cfg_.auto_fire || !plan_fire_enabled || !shot_candidate.face_shootable_at_hit)
   {
     remember_command();
     return false;
@@ -360,16 +331,30 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   const double command_error_roll =
       std::abs(AimerDetail::LimitRad(last_command_roll_ - roll));
   const double gimbal_error_yaw = std::abs(AimerDetail::LimitRad(gimbal_yaw - yaw));
-  const double gimbal_error_roll =
-      std::abs(AimerDetail::LimitRad(gimbal_roll - roll));
+  const double gimbal_error_roll = std::abs(AimerDetail::LimitRad(gimbal_roll - roll));
 
   const bool command_stable = command_error_yaw < yaw_threshold * 2.0 &&
                               command_error_roll < roll_threshold * 2.0;
-  const bool gimbal_aligned = gimbal_error_yaw < yaw_threshold &&
-                              gimbal_error_roll < roll_threshold;
+  const bool gimbal_aligned =
+      gimbal_error_yaw < yaw_threshold && gimbal_error_roll < roll_threshold;
 
   remember_command();
   return command_stable && gimbal_aligned;
+}
+
+/**
+ * @brief 输出 tracker 目标回调的累计耗时统计。
+ */
+inline void AimerCore::OnMonitor()
+{
+  const auto summary = target_callback_duration_.GetSummary();
+  XR_LOG_INFO(
+      "Aimer monitor: target_callback count=%llu average_us=%llu "
+      "minimum_us=%llu maximum_us=%llu",
+      static_cast<unsigned long long>(summary.sample_count),
+      static_cast<unsigned long long>(summary.average_us),
+      static_cast<unsigned long long>(summary.minimum_us),
+      static_cast<unsigned long long>(summary.maximum_us));
 }
 
 /**
@@ -378,6 +363,7 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
  */
 inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
+  auto target_callback_measurement = target_callback_duration_.Measure();
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   AimerPreviewFrame preview_frame{};
@@ -410,6 +396,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     preview_frame.have_host_fire = true;
     preview_frame.host_fire = host_fire;
     PublishPreviewState(preview_frame);
+
   };
 
   if (target_msg.id != last_target_id_)
@@ -490,8 +477,8 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   preview_frame.aim_point = final_xyz;
   preview_frame.aim_armor_index = aim_point.armor_index;
   preview_frame.aim_xyza = aim_point.xyza;
-  const double yaw = AimerDetail::LimitRad(
-      AimerDetail::BearingYaw(final_xyz) + cfg_.yaw_offset * AimerDetail::DEG2RAD);
+  const double yaw = AimerDetail::LimitRad(AimerDetail::BearingYaw(final_xyz) +
+                                           cfg_.yaw_offset * AimerDetail::DEG2RAD);
   const double roll = trajectory.elevation + cfg_.roll_offset * AimerDetail::DEG2RAD;
 
   const AimerShotCandidate direct_shot_candidate =
@@ -501,8 +488,7 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   BuildGimbalPlan(target_msg, delay_time, true, yaw, roll, bullet_speed,
                   direct_shot_candidate, fire_shot_candidate);
 
-  gimbal_plan_msg_.fire =
-      ShouldAutoFire(fire_shot_candidate, gimbal_plan_msg_.fire,
-                     gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll);
+  gimbal_plan_msg_.fire = ShouldAutoFire(fire_shot_candidate, gimbal_plan_msg_.fire,
+                                         gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll);
   publish_outputs(bullet_speed);
 }
