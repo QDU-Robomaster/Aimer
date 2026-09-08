@@ -126,13 +126,16 @@ jobs:
           cmake -S . -B build \
             -DOpenVINO_DIR=/opt/intel/openvino_2025.4.0/runtime/cmake \
             -DBUILD_TESTING=ON \
+            -DLIBXR_SYSTEM=linux \
+            -DLIBXR_DRIVER=linux \
             -DLIBXR_PRINT_INTEGER_ENABLE_64BIT=ON \
             -DLIBXR_PRINT_FLOAT_ENABLE_DOUBLE=ON \
             -DLIBXR_PRINT_ENABLE_POINTER=ON
           cmake --build build -j2 --target \
             aimer_compile_test \
             aimer_preview_geometry_test \
-            aimer_stage_frame_access_test
+            aimer_stage_frame_access_test \
+            aimer_referee_topic_test
 
       - name: Run Aimer tests
         run: >-

@@ -55,6 +55,7 @@ constructor_args:
     bullet_speed_log_delta: 0.05
     heat_log_delta: 1.0
     convert_raw_gimbal_quat_to_body: false
+    referee_topic: "robot_game_ref"
   calibration:
     native_width: 1280
     native_height: 720
@@ -75,6 +76,7 @@ depends:
   - qdu-future/CameraBase
   - qdu-future/VisionPreview
   - xrobot-org/DurationStatistics
+  - qdu-future/Referee
 === END MANIFEST === */
 // clang-format on
 
@@ -82,63 +84,26 @@ depends:
 #include <atomic>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "ArmorTrackerTarget.hpp"
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
+#include "RefereeTypes.hpp"
 #include "VisionPreview.hpp"
 #include "app_framework.hpp"
 #include "libxr.hpp"
+#include "libxr_string.hpp"
 #include "logger.hpp"
 #include "mutex.hpp"
 #include "tinympc/tiny_api.hpp"
 
-/**
- * @brief 裁判系统机器人状态摘要。
- */
-struct [[gnu::packed]] AimerRefereeRobotStatus
-{
-  uint8_t robot_id{};
-  uint8_t robot_level{};
-  uint16_t remain_hp{};
-  uint16_t max_hp{};
-  uint16_t shooter_cooling_value{};
-  uint16_t shooter_heat_limit{};
-  uint16_t chassis_power_limit{};
-  uint8_t power_gimbal_output : 1 {};
-  uint8_t power_chassis_output : 1 {};
-  uint8_t power_launcher_output : 1 {};
-};
-
-/**
- * @brief 裁判系统比赛状态摘要。
- */
-struct [[gnu::packed]] AimerRefereeGameStatus
-{
-  uint8_t game_type : 4 {};
-  uint8_t game_progress : 4 {};
-  uint16_t stage_remain_time{};
-  uint64_t sync_time_stamp{};
-};
-
-/**
- * @brief host/robot_game_ref 的比赛旧 BSP 92 字节裁判系统摘要数据。
- *
- * 该 robot_game_ref 实际对应旧比赛 BSP 的 RobotGameRefereePack。Aimer 当前只显式消费
- * RobotStatus/GameStatus 前缀，其余字段保留为不透明尾部，只用于对齐 ABI。
- */
-struct [[gnu::packed]] AimerRefereeSummary
-{
-  AimerRefereeRobotStatus robot_status{};
-  AimerRefereeGameStatus game_status{};
-  uint8_t reserved_tail[68]{};
-};
-
-static_assert(sizeof(AimerRefereeRobotStatus) == 13);
-static_assert(sizeof(AimerRefereeGameStatus) == 11);
-static_assert(sizeof(AimerRefereeSummary) == 92);
+/** @brief 裁判输入使用 Referee 的同一公共数据类型。 */
+using AimerRefereeRobotStatus = RefereeTypes::RobotStatus;
+using AimerRefereeGameStatus = RefereeTypes::GameStatus;
+using AimerRefereeSummary = RefereeTypes::RobotGameRefereePack;
 
 /**
  * @brief DevC HostData 接收的云台目标数据。
@@ -301,6 +266,8 @@ struct AimerConfig
   double heat_log_delta{1.0};
   /// 是否把原始 x 前、y 左、z 上的 ahrs_quaternion 转到公开 body 轴。
   bool convert_raw_gimbal_quat_to_body{false};
+  /// host 域内裁判话题名，须非空；构造时复制并直接订阅。
+  std::string_view referee_topic{"robot_game_ref"};
 };
 
 /**
@@ -411,6 +378,7 @@ class AimerCore : public LibXR::Application
 
  private:
   Config cfg_{};
+  LibXR::RuntimeStringView<> referee_topic_name_;  ///< 持有配置话题名，供订阅和日志使用。
   XRobot::DurationStatistics target_callback_duration_{};
   std::atomic<double> bullet_speed_{23.0};
   int lock_id_{-1};
