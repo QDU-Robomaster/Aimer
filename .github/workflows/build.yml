@@ -132,7 +132,8 @@ jobs:
           cmake --build build -j2 --target \
             aimer_compile_test \
             aimer_preview_geometry_test \
-            aimer_stage_frame_access_test
+            aimer_stage_frame_access_test \
+            aimer_referee_topic_test
 
       - name: Run Aimer tests
         run: >-

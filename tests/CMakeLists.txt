@@ -10,3 +10,11 @@ target_link_libraries(aimer_stage_frame_access_test PRIVATE xr)
 target_compile_features(aimer_stage_frame_access_test PRIVATE cxx_std_20)
 
 add_test(NAME aimer_stage_frame_access_test COMMAND aimer_stage_frame_access_test)
+
+add_executable(aimer_referee_topic_test referee_topic_test.cpp)
+target_link_libraries(aimer_referee_topic_test PRIVATE xr)
+target_compile_features(aimer_referee_topic_test PRIVATE cxx_std_20)
+add_test(NAME aimer_referee_default_topic_test COMMAND aimer_referee_topic_test
+                                                       robot_game_ref
+)
+add_test(NAME aimer_referee_sentry_topic_test COMMAND aimer_referee_topic_test sentry_ref)

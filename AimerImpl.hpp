@@ -17,8 +17,11 @@
  */
 inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
                             Config cfg)
-    : cfg_(std::move(cfg)), bullet_speed_(cfg_.default_bullet_speed)
+    : cfg_(std::move(cfg)),
+      referee_topic_name_(cfg_.referee_topic),
+      bullet_speed_(cfg_.default_bullet_speed)
 {
+  cfg_.referee_topic = referee_topic_name_.View();
   SetupGimbalPlanSolvers();
   RegisterHostInputCallbacks();
   app.Register(*this);
@@ -84,8 +87,8 @@ inline void AimerCore::RegisterGimbalQuatInput()
  */
 inline void AimerCore::RegisterRefereeSummaryInput()
 {
-  LibXR::Topic referee_topic =
-      LibXR::Topic::FindOrCreate<AimerRefereeSummary>("robot_game_ref", &host_domain_);
+  LibXR::Topic referee_topic = LibXR::Topic::FindOrCreate<AimerRefereeSummary>(
+      referee_topic_name_.CStr(), &host_domain_);
   auto referee_callback = LibXR::Topic::Callback::Create(
       [](bool, AimerCore* self, const AimerRefereeSummary& summary)
       { self->RefereeSummaryCallback(summary); }, this);
@@ -132,11 +135,11 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
  */
 inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
-  UpdateBulletSpeed(cfg_.default_bullet_speed, "host/robot_game_ref");
+  UpdateBulletSpeed(cfg_.default_bullet_speed, referee_topic_name_.CStr());
   LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
                 static_cast<double>(summary.robot_status.shooter_heat_limit),
                 static_cast<double>(summary.robot_status.shooter_cooling_value),
-                "host/robot_game_ref", false);
+                referee_topic_name_.CStr(), false);
 }
 
 /**
