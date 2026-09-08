@@ -126,6 +126,8 @@ jobs:
           cmake -S . -B build \
             -DOpenVINO_DIR=/opt/intel/openvino_2025.4.0/runtime/cmake \
             -DBUILD_TESTING=ON \
+            -DLIBXR_SYSTEM=linux \
+            -DLIBXR_DRIVER=linux \
             -DLIBXR_PRINT_INTEGER_ENABLE_64BIT=ON \
             -DLIBXR_PRINT_FLOAT_ENABLE_DOUBLE=ON \
             -DLIBXR_PRINT_ENABLE_POINTER=ON
