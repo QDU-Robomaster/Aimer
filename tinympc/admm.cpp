@@ -5,8 +5,6 @@
 
 #define DEBUG_MODULE "TINYALG"
 
-extern "C" {
-
 /**
  * Update linear terms from Riccati backward pass
 */
@@ -381,5 +379,3 @@ int solve(TinySolver *solver)
     solver->solution->u = solver->work->znew;
     return 1;
 }
-
-} /* extern "C" */

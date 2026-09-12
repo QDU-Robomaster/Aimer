@@ -156,6 +156,9 @@ int tiny_set_bound_constraints(TinySolver* solver,
     status |= check_dimension("Lower input bounds (u_min)", "cols", u_min.cols(), solver->work->N-1);
     status |= check_dimension("Lower input bounds (u_max)", "rows", u_max.rows(), solver->work->nu);
     status |= check_dimension("Lower input bounds (u_max)", "cols", u_max.cols(), solver->work->N-1);
+    if (status) {
+        return status;
+    }
 
     solver->work->x_min = x_min;
     solver->work->x_max = x_max;
@@ -398,6 +401,9 @@ int tiny_set_x_ref(TinySolver* solver, tinyMatrix x_ref) {
     int status = 0;
     status |= check_dimension("State reference trajectory (x_ref)", "rows", x_ref.rows(), solver->work->nx);
     status |= check_dimension("State reference trajectory (x_ref)", "columns", x_ref.cols(), solver->work->N);
+    if (status) {
+        return status;
+    }
     solver->work->Xref = x_ref;
     return 0;
 }
@@ -410,6 +416,9 @@ int tiny_set_u_ref(TinySolver* solver, tinyMatrix u_ref) {
     int status = 0;
     status |= check_dimension("Control/input reference trajectory (u_ref)", "rows", u_ref.rows(), solver->work->nu);
     status |= check_dimension("Control/input reference trajectory (u_ref)", "columns",u_ref.cols(), solver->work->N-1);
+    if (status) {
+        return status;
+    }
     solver->work->Uref = u_ref;
     return 0;
 }

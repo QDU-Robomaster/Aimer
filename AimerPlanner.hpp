@@ -178,7 +178,7 @@ inline void AimerCore::SetupGimbalPlanSolvers()
     return;
   }
 
-  auto setup_solver = [this](TinySolver** solver, double max_acc, double q_pos,
+  auto setup_solver = [](TinySolver** solver, double max_acc, double q_pos,
                              double q_vel, double r_acc) -> bool
   {
     Eigen::MatrixXd a(2, 2);

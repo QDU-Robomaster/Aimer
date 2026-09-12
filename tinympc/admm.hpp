@@ -2,10 +2,6 @@
 
 #include "types.hpp"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 int solve(TinySolver *solver);
 
 void update_primal(TinySolver *solver);
@@ -32,6 +28,3 @@ tinyVector project_soc(tinyVector s, float mu);
  * @return Projection of z onto the hyperplane
  */
 tinyVector project_hyperplane(const tinyVector& z, const tinyVector& a, tinytype b);
-#ifdef __cplusplus
-}
-#endif
