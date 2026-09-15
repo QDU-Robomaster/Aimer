@@ -8,75 +8,17 @@
 // clang-format off
 /* === MODULE MANIFEST V2 ===
 module_description: ballistic aimer with DevC host target output
-constructor_args:
-  cfg:
-    yaw_offset: -1.0
-    roll_offset: -1.4
-    yaw_rate_threshold: 2.0
-    default_bullet_speed: 21.0
-    min_valid_bullet_speed: 14.0
-    ballistic_drag_k: 0.02
-    ballistic_integration_dt_s: 0.001
-    ballistic_max_iterations: 16
-    ballistic_min_elevation_deg: -20.0
-    ballistic_max_elevation_deg: 35.0
-    auto_fire: true
-    image_to_now_s: 0.0
-    vision_to_command_delay_s: 0.0
-    command_transport_delay_s: 0.0
-    gimbal_response_delay_s: 0.0
-    fire_delay_s: 0.0
-    low_speed_extra_predict_s: 0.015
-    high_speed_extra_predict_s: 0.03
-    min_fire_threshold: 0.003
-    max_fire_threshold: 0.05
-    enable_mpc_plan: true
-    mpc_fire_thresh: 0.05
-    max_yaw_acc: 50.0
-    q_yaw_pos: 9000000.0
-    q_yaw_vel: 0.0
-    r_yaw_acc: 1.0
-    max_roll_acc: 100.0
-    q_roll_pos: 9000000.0
-    q_roll_vel: 0.0
-    r_roll_acc: 1.0
-    preview:
-      enabled: false
-      preview_window_name: "aimer_preview"
-      preview_scale: 0.5
-      preview_wait_key_ms: 1
-      queue_capacity: 1
-      output_mode: "window"
-      web_bind_address: "0.0.0.0"
-      web_port: 8080
-      web_stream_name: "aimer_preview"
-      max_fps: 30.0
-    enable_runtime_log: true
-    bullet_speed_log_delta: 0.05
-    heat_log_delta: 1.0
-    convert_raw_gimbal_quat_to_body: false
-    referee_topic: "robot_game_ref"
-  calibration:
-    native_width: 1280
-    native_height: 720
-    camera_matrix: [800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0]
-    distortion_model: CameraTypes::DistortionModel::PLUMB_BOB
-    distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
-    rectification_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    projection_matrix: [800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-template_args:
-  - Layout:
-      width: 1280
-      height: 720
-      step: 3840
-      encoding: CameraTypes::Encoding::BGR8
-required_hardware: []
 depends:
-  - qdu-future/ArmorTracker
-  - qdu-future/CameraBase
-  - qdu-future/VisionPreview
-  - xrobot-org/DurationStatistics
-  - qdu-future/Referee
+- id: QDU-Robomaster/ArmorTracker
+  ref: same-or-dev
+- id: QDU-Robomaster/CameraBase
+  ref: same-or-dev
+- id: QDU-Robomaster/VisionPreview
+  ref: same-or-dev
+- id: xrobot-org/DurationStatistics
+  ref: same-or-dev
+- id: QDU-Robomaster/Referee
+  ref: same-or-dev
 === END MANIFEST === */
 // clang-format on
 
@@ -93,8 +35,8 @@ depends:
 #include "GimbalPlan.hpp"
 #include "RefereeTypes.hpp"
 #include "VisionPreview.hpp"
-#include "app_framework.hpp"
 #include "libxr.hpp"
+#include "libxr_def.hpp"
 #include "libxr_string.hpp"
 #include "logger.hpp"
 #include "mutex.hpp"
@@ -273,7 +215,7 @@ struct AimerConfig
 /**
  * @brief 选择目标装甲板、解算 yaw/roll 轴命令，并发布云台命令。
  */
-class AimerCore : public LibXR::Application
+class AimerCore
 {
  public:
   using Config = AimerConfig;
@@ -282,12 +224,12 @@ class AimerCore : public LibXR::Application
   /**
    * @brief 创建 Aimer 运行核心并注册裁判系统和云台反馈回调。
    */
-  AimerCore(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg);
+  AimerCore(Config cfg);
 
   /**
    * @brief 输出 tracker 目标回调的累计耗时统计。
    */
-  void OnMonitor() override;
+  void OnMonitor();
 
  protected:
   /**
@@ -435,14 +377,13 @@ class Aimer : public AimerCore
    *
    * @param calibration 原生传感器坐标系下的不可变相机标定，按值持有。
    */
-  Aimer(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app, Config cfg,
-        CameraCalibration calibration)
-      : AimerCore(hw, app, cfg), calibration_(std::move(calibration))
+  Aimer(Config cfg, CameraCalibration calibration)
+      : AimerCore(cfg), calibration_(std::move(calibration))
   {
     ASSERT(CameraBaseIntrinsicSanity::CameraCalibrationReasonable(calibration_));
     if (cfg.preview.enabled)
     {
-      preview_.emplace(hw, app, AimerDetail::MakeAimerPreviewConfig(cfg), calibration_);
+      preview_.emplace(AimerDetail::MakeAimerPreviewConfig(cfg), calibration_);
       SetPreviewSink([](void* context, const AimerPreviewFrame& frame)
                      { static_cast<Aimer*>(context)->SubmitPreviewFrame(frame); }, this);
     }

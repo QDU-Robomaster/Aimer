@@ -50,7 +50,7 @@ inline AimerPreviewConfig MakeAimerPreviewConfig(const AimerConfig& cfg)
  * 在 Submit() 入口完成。
  */
 template <CameraTypes::FrameLayout FrameLayoutV>
-class AimerPreview : public LibXR::Application
+class AimerPreview
 {
  public:
   using Base = CameraBase<FrameLayoutV>;
@@ -70,17 +70,15 @@ class AimerPreview : public LibXR::Application
   /**
    * @brief 构造 Aimer preview。
    */
-  AimerPreview(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
-               AimerPreviewConfig cfg, CameraCalibration calibration)
+  AimerPreview(AimerPreviewConfig cfg, CameraCalibration calibration)
       : cfg_(std::move(cfg)), calibration_(std::move(calibration)), preview_(cfg_.preview)
   {
-    app.Register(*this);
   }
 
   /**
    * @brief Aimer preview 不需要周期监控。
    */
-  void OnMonitor() override {}
+  void OnMonitor() {}
 
   /**
    * @brief 处理 Aimer Core 同步提交的本帧状态。

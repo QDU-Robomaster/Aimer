@@ -1,5 +1,16 @@
 # Aimer
 
+## Static assembly source line
+
+This source line uses explicit C++ constructor dependencies and ordered instance
+arguments. Inspect the current primary header with `xrobot_mod_parser --path .`;
+its declarations, not old manifest/config examples, define the interface.
+Historical HardwareContainer/ApplicationManager examples below apply only to the
+older dynamic source tags. Device/protocol descriptions remain relevant.
+See the XRobot [migration guide](https://github.com/xrobot-org/XRobot/blob/dev/MIGRATION.md).
+Compilation is not hardware validation; retain version-specific board evidence.
+
+
 预览重投影使用原生相机内参和畸变系数，再根据当前帧 geometry 映射到图像坐标。
 无效标定或需要预先去畸变的模型不生成预览投影点；此处理不改变弹道和开火策略。
 
