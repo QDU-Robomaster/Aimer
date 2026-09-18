@@ -23,7 +23,7 @@ DevC 云台目标和发射许可。控制逻辑使用 tracker 目标状态和同
 
 - 输入 `tracker/target_frame`：`ArmorTracker` 同步发布的 `const TrackedFrame*`，包含
   `SharedFrame` 图像所有权，以及按值携带的 IMU、`ArmorTrackerTarget` 和投影变换。
-- 裁判输入位于 `host` 域，话题名由 `cfg.referee_topic` 配置，默认 `robot_game_ref`，哨兵可设为 `sentry_ref`。直接使用 `RefereeTypes::RobotGameRefereePack`，`AimerRefereeSummary` 是同一类型的别名。当前回调使用配置的默认弹速，并读取热量上限和冷却值；不把摘要当作实测弹速。BSP 应在接收器构造前按该公共类型创建对应话题。
+- 裁判输入位于 `host` 域，话题名由 `cfg.referee_topic` 配置，默认 `robot_game_ref`，哨兵可设为 `sentry_ref`。直接使用 `Referee::RobotGameRefereePack`，`AimerRefereeSummary` 是同一类型的别名。当前回调使用配置的默认弹速，并读取热量上限和冷却值；不把摘要当作实测弹速。BSP 应在接收器构造前按该公共类型创建对应话题。
 - 输入 `host/gimbal_quat`：C 板回传的云台当前姿态，只用于自动开火判定。
 - 输出 `host/target_euler`：DevC `HostData` 接收的云台目标，包含角度、角速度和角加速度前馈；机械俯仰轴使用 roll 字段。
 - 输出 `host/fire_notify`：DevC `LauncherCMD` 接收的发射许可，值与最终云台计划开火门控保持一致。

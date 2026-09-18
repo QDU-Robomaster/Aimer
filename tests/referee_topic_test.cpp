@@ -5,7 +5,7 @@
 
 #include "Aimer.hpp"
 
-static_assert(std::is_same_v<AimerRefereeSummary, RefereeTypes::RobotGameRefereePack>);
+static_assert(std::is_same_v<AimerRefereeSummary, Referee::RobotGameRefereePack>);
 static_assert(AimerConfig{}.referee_topic == "robot_game_ref");
 
 struct LogContext
@@ -42,9 +42,9 @@ int main(int argc, char** argv)
   const std::string selected_name = configured_name;
   const char* other_name =
       selected_name == "sentry_ref" ? "robot_game_ref" : "sentry_ref";
-  auto selected = LibXR::Topic::CreateTopic<RefereeTypes::RobotGameRefereePack>(
+  auto selected = LibXR::Topic::CreateTopic<Referee::RobotGameRefereePack>(
       selected_name.c_str(), &host, true);
-  auto other = LibXR::Topic::CreateTopic<RefereeTypes::RobotGameRefereePack>(other_name,
+  auto other = LibXR::Topic::CreateTopic<Referee::RobotGameRefereePack>(other_name,
                                                                              &host, true);
   AimerConfig config;
   config.referee_topic = configured_name;
@@ -56,7 +56,7 @@ int main(int argc, char** argv)
   LibXR::Topic log_topic(LibXR::Topic::Find("/xr/log"));
   auto callback = LibXR::Topic::Callback::Create(ObserveLog, &context);
   log_topic.RegisterCallback(callback);
-  RefereeTypes::RobotGameRefereePack packet{};
+  Referee::RobotGameRefereePack packet{};
   packet.robot_status.shooter_cooling_value = 17;
   packet.robot_status.shooter_heat_limit = 250;
   other.Publish(packet, LibXR::MicrosecondTimestamp(100));

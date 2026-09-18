@@ -33,7 +33,7 @@ depends:
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
-#include "RefereeTypes.hpp"
+#include "Referee.hpp"
 #include "VisionPreview.hpp"
 #include "libxr.hpp"
 #include "libxr_def.hpp"
@@ -43,9 +43,9 @@ depends:
 #include "tinympc/tiny_api.hpp"
 
 /** @brief 裁判输入使用 Referee 的同一公共数据类型。 */
-using AimerRefereeRobotStatus = RefereeTypes::RobotStatus;
-using AimerRefereeGameStatus = RefereeTypes::GameStatus;
-using AimerRefereeSummary = RefereeTypes::RobotGameRefereePack;
+using AimerRefereeRobotStatus = Referee::RobotStatus;
+using AimerRefereeGameStatus = Referee::GameStatus;
+using AimerRefereeSummary = Referee::RobotGameRefereePack;
 
 /**
  * @brief DevC HostData 接收的云台目标数据。
@@ -377,7 +377,13 @@ class Aimer : public AimerCore
    *
    * @param calibration 原生传感器坐标系下的不可变相机标定，按值持有。
    */
-  Aimer(Config cfg, CameraCalibration calibration)
+  static Config DefaultConfig() { return {}; }
+
+  static CameraCalibration DefaultCalibration() { return {.native_width = 1280, .native_height = 720, .camera_matrix = {800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0}, .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB, .distortion_coefficients = {0.0, 0.0, 0.0, 0.0, 0.0}, .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}, .projection_matrix = {800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0}}; }
+
+  Aimer(
+      Config cfg = DefaultConfig(),
+      CameraCalibration calibration = DefaultCalibration())
       : AimerCore(cfg), calibration_(std::move(calibration))
   {
     ASSERT(CameraBaseIntrinsicSanity::CameraCalibrationReasonable(calibration_));
