@@ -76,11 +76,6 @@ class AimerPreview
   }
 
   /**
-   * @brief Aimer preview 不需要周期监控。
-   */
-  void OnMonitor() {}
-
-  /**
    * @brief 处理 Aimer Core 同步提交的本帧状态。
    */
   void OnAimerFrame(const AimerPreviewFrame& frame, const TargetFrame* target_frame)
