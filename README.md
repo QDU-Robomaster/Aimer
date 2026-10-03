@@ -100,7 +100,7 @@ Aimer(Config cfg = DefaultConfig(),
 | `mpc_fire_thresh` | `0.05` | 允许使用 MPC 输出和开火的最大计划偏离，rad。 |
 | `max_yaw_acc`、`q_yaw_pos`、`q_yaw_vel`、`r_yaw_acc` | `50.0`、`9000000.0`、`0.0`、`1.0` | yaw 轴 MPC 加速度约束（rad/s^2）与代价。 |
 | `max_roll_acc`、`q_roll_pos`、`q_roll_vel`、`r_roll_acc` | `100.0`、`9000000.0`、`0.0`、`1.0` | roll 轴 MPC 加速度约束（rad/s^2）与代价。 |
-| `preview` | 关闭 | `VisionPreview::RuntimeParam`，字段见 VisionPreview。 |
+| `preview` | 关闭，`preview_window_name` 为 `"aimer_preview"`，`preview_scale` 为 `0.5`，`web_stream_name` 为 `"aimer_preview"` | `VisionPreview::RuntimeParam`，其余字段取 VisionPreview 的默认值，字段见 VisionPreview。 |
 | `enable_runtime_log` | `true` | 是否输出运行期统计日志。 |
 | `bullet_speed_log_delta` / `heat_log_delta` | `0.05` / `1.0` | 弹速、热量日志的变化阈值。 |
 | `convert_raw_gimbal_quat_to_body` | `false` | 原始云台四元数到 body 轴的转换开关。 |
@@ -136,7 +136,7 @@ The Module receives its inputs through Topics; all constructor parameters are co
 | `mpc_fire_thresh` | `0.05` | Maximum plan deviation for using the MPC output and firing, in rad. |
 | `max_yaw_acc`, `q_yaw_pos`, `q_yaw_vel`, `r_yaw_acc` | `50.0`, `9000000.0`, `0.0`, `1.0` | Yaw-axis MPC acceleration constraint (rad/s^2) and costs. |
 | `max_roll_acc`, `q_roll_pos`, `q_roll_vel`, `r_roll_acc` | `100.0`, `9000000.0`, `0.0`, `1.0` | Roll-axis MPC acceleration constraint (rad/s^2) and costs. |
-| `preview` | disabled | `VisionPreview::RuntimeParam`; see VisionPreview for the fields. |
+| `preview` | disabled, `preview_window_name` is `"aimer_preview"`, `preview_scale` is `0.5` and `web_stream_name` is `"aimer_preview"` | `VisionPreview::RuntimeParam`; the other fields take the defaults of VisionPreview, see VisionPreview for the fields. |
 | `enable_runtime_log` | `true` | Enables the runtime statistics log. |
 | `bullet_speed_log_delta` / `heat_log_delta` | `0.05` / `1.0` | Change thresholds of the bullet-speed and heat logs. |
 | `convert_raw_gimbal_quat_to_body` | `false` | Switch for converting the raw gimbal quaternion to the body axes. |

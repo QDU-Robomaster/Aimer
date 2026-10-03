@@ -269,7 +269,9 @@ struct AimerConfig
   double r_roll_acc{1.0};
   /// Aimer 内置实时预览的运行参数
   /// Runtime parameters of the built-in live preview of Aimer
-  VisionPreview::RuntimeParam preview{};
+  VisionPreview::RuntimeParam preview{.preview_window_name = "aimer_preview",
+                                      .preview_scale = 0.5,
+                                      .web_stream_name = "aimer_preview"};
   /// 是否输出运行期统计日志
   /// Whether the runtime statistics log is output
   bool enable_runtime_log{true};
@@ -585,6 +587,10 @@ class Aimer : public AimerCore
   /**
    * @brief 返回全部取默认值的配置。
    *        Return the configuration holding all defaults.
+   *
+   * 预览默认关闭，窗口名为 `aimer_preview`，缩放为 0.5，Web 流名为 `aimer_preview`。
+   * The preview is disabled by default, with window name `aimer_preview`, scale 0.5 and
+   * web stream name `aimer_preview`.
    *
    * @return 默认配置。
    *         Default configuration.
