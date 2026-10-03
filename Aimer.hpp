@@ -599,7 +599,17 @@ class Aimer : public AimerCore
    * @return 默认相机标定。
    *         Default camera calibration.
    */
-  static CameraCalibration DefaultCalibration() { return {.native_width = 1280, .native_height = 720, .camera_matrix = {800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0}, .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB, .distortion_coefficients = {0.0, 0.0, 0.0, 0.0, 0.0}, .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}, .projection_matrix = {800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0}}; }
+  static CameraCalibration DefaultCalibration()
+  {
+    return {.native_width = 1280,
+            .native_height = 720,
+            .camera_matrix = {800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0},
+            .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB,
+            .distortion_coefficients = {0.0, 0.0, 0.0, 0.0, 0.0},
+            .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0},
+            .projection_matrix = {800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0}};
+  }
 
   /**
    * @brief 构造 Aimer，持有原生相机标定，并订阅 tracker 域的 target_frame。
@@ -612,9 +622,8 @@ class Aimer : public AimerCore
    *                    Camera calibration in the native sensor frame used for the preview
    *                    projection, held by value.
    */
-  Aimer(
-      Config cfg = DefaultConfig(),
-      CameraCalibration calibration = DefaultCalibration())
+  Aimer(Config cfg = DefaultConfig(),
+        CameraCalibration calibration = DefaultCalibration())
       : AimerCore(cfg), calibration_(std::move(calibration))
   {
     ASSERT(CameraBaseIntrinsicSanity::CameraCalibrationReasonable(calibration_));
