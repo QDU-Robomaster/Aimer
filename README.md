@@ -1,125 +1,84 @@
 # Aimer
 
-`Aimer` 是 tracker 后面的瞄点与弹道模块。它收到 `tracker` 域的 `target_frame` 后选择要打的
-装甲板，预测目标运动，解算最终机械俯仰 roll 和 yaw，并发布 DevC 云台目标和发射许可。控制
-逻辑使用 tracker 目标状态和同帧 IMU；同源图像只供内置 preview 投影使用。
+弹道瞄准模块：选择装甲板、预测目标运动并解算云台目标与发射许可 / Ballistic aiming Module that selects the armor plate, predicts the target motion and solves the gimbal target and fire permission
 
-`tinympc/` 下的 TinyMPC 源码为第三方代码（MIT），来源与修改说明见 [NOTICE](NOTICE)。
+## 1. 模块作用 / Purpose
 
-## 数据流
+Aimer 订阅 `tracker` 域的 `target_frame`（ArmorTracker 发布的 `const TrackedFrame*`，包含 `SharedFrame` 图像所有权，以及按值携带的同帧 IMU、`ArmorTrackerTarget` 和投影变换）。每收到一帧，Aimer 选择要打的装甲板，预测目标运动，解算机械俯仰轴 roll 与 yaw，并向 `host` 域发布云台目标 `target_euler` 和发射许可 `fire_notify`。同帧 IMU 四元数同时作为当前云台姿态，用于自动开火的对齐判定。目标丢失或弹道不可解时，输出全零云台目标，发射许可为 `false`。
 
-- 输入 `tracker/target_frame`：`ArmorTracker` 同步发布的 `const TrackedFrame*`，包含
-  `SharedFrame` 图像所有权，以及按值携带的 IMU、`ArmorTrackerTarget` 和投影变换。同帧 IMU
-  四元数同时作为当前云台姿态，用于自动开火的对齐判定。
-- 裁判输入位于 `host` 域，话题名由 `cfg.referee_topic` 配置（默认 `robot_game_ref`，须非空），
-  类型直接使用 `Referee::RobotGameRefereePack`（`AimerRefereeSummary` 是同一类型的别名），
-  发布方须使用同一类型。回调读取热量上限和冷却值用于日志，弹速仍取配置的
-  `default_bullet_speed`，不把摘要当作实测弹速。
-- 输出 `host/target_euler`（`AimerHostGimbalTarget`）：DevC `HostData` 接收的云台目标，包含
-  角度、角速度和角加速度前馈，单位 rad、rad/s、rad/s^2；机械俯仰轴使用 `rol*` 字段，`pit*`
-  字段为兼容旧接口镜像同一值。
-- 输出 `host/fire_notify`（`AimerHostFireNotify`）：DevC `LauncherCMD` 接收的发射许可，值与
-  最终云台计划开火门控保持一致。
+预测延迟为 `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s + gimbal_response_delay_s`，再按 `|v_yaw|` 是否超过 `yaw_rate_threshold` 加上 `high_speed_extra_predict_s` 或 `low_speed_extra_predict_s`。Aimer 预测到延迟后的目标，选择瞄点，再按弹丸飞行时间二次预测并重新选择瞄点。
 
-坐标约定：`ArmorTrackerTarget` 使用右手系，`x` 向右、`y` 向前、`z` 向上。Aimer 的 yaw 以
-前向为 0、左转为正；水平距离使用 `x-y` 平面，高度使用 `z`。
+弹道使用二次空气阻力模型（`a = -k·|v|·v`）：给定发射仰角后用 RK4 积分弹丸运动，再在 `[ballistic_min_elevation_deg, ballistic_max_elevation_deg]` 内用二分括区求根求仰角；不可解时输出空命令。TinyMPC 参考轨迹的逐采样命令使用无阻力解析弹道近似。
 
-## 代码结构
+云台目标使用 yaw 与 roll 两轴的双积分 TinyMPC 生成。参考轨迹覆盖 `PLAN_HORIZON = 75` 个采样（`dt = 0.01 s`），逐采样重新选择几何最近的装甲板，使云台在切板前开始减速；输出取窗口中点 `PLAN_HALF_HORIZON = 37` 的状态，包含角度、角速度和角加速度前馈。MPC 关闭、求解失败或输出偏离参考超过 `mpc_fire_thresh` 时，输出直接的 yaw 与 roll 命令，速度与加速度前馈为 0。
 
-- `Aimer.hpp`：模块 manifest、公有消息结构、配置项 `AimerConfig`、`AimerCore` 运行核心和外层
-  `Aimer<FrameLayoutV>` 模块。
-- `AimerMath.hpp`：角度归一化、坐标水平面约定、动态开火阈值和弹道解算。
-- `AimerTargetModel.hpp`：tracker target 预测、装甲板展开、瞄点和命中候选选择。
-- `AimerPlanner.hpp`：TinyMPC 参考轨迹、求解器初始化和 host 云台目标生成。
-- `AimerImpl.hpp`：topic 回调、命令发布和主回调流程。
-- `AimerPreview.hpp` / `AimerPreviewGeometry.hpp`：`Aimer` 内部持有的预览实现。
-- `GimbalPlan.hpp`：内部云台计划结构。
+发射许可绑定单发弹丸的未来命中候选：在开火采样点（中点后 `fire_delay_s`，为 0 时取 2 个采样）按计划枪线遍历所有物理装甲面，选择角误差最小的命中面，再检查该面在命中时刻是否可打。`fire_notify` 为 `true` 的条件为：
 
-模块实现为头文件内联，TinyMPC 自身的 `.cpp` 由 CMake 编译进 `xr`。
+- `auto_fire` 打开，命中面可打，计划枪线与命中候选一致。
+- 本帧命令与上一帧命令之差小于动态阈值的 2 倍。
+- 同帧 IMU 给出的云台姿态与命令的偏差小于动态阈值。动态阈值由目标距离、装甲尺寸和视角计算，限制在 `min_fire_threshold` 到 `max_fire_threshold` 之间。
 
-## 策略
+`host` 域的裁判 Topic（名称由 `referee_topic` 配置）提供热量上限和冷却值，用于日志。弹速取 `default_bullet_speed`；弹速低于 `min_valid_bullet_speed` 时同样取该值。
 
-- 每个 `target_frame` 回调都会发布一组输出；目标丢失或弹道不可解时输出全零云台目标且不开火。
-- 预测延迟为 `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s +
-  gimbal_response_delay_s`，再按 `|v_yaw|` 是否超过 `yaw_rate_threshold` 加上
-  `high_speed_extra_predict_s` 或 `low_speed_extra_predict_s`。Aimer 预测到延迟后的目标，
-  选择瞄点，再按弹丸飞行时间二次预测并重新选择瞄点。
-- 瞄准命令和开火候选的弹道使用二次空气阻力模型（`a = -k·|v|·v`）：给定发射仰角后用 RK4 积分
-  弹丸运动，再在 `[ballistic_min_elevation_deg, ballistic_max_elevation_deg]` 内用二分括区
-  求根求仰角；不可解时输出空命令，不回退到无阻力模型。TinyMPC 参考轨迹的逐采样命令使用
-  无阻力解析弹道近似。
-- TinyMPC 参考轨迹在 `PLAN_HORIZON = 75`、`dt = 0.01 s`、中点 `PLAN_HALF_HORIZON = 37` 的
-  预测窗口内逐采样重新选择几何最近装甲板，使云台在切板前具备提前减速能力；输出取窗口中点
-  的状态。
-- 云台目标使用 yaw/roll 双积分 TinyMPC，默认 `max_yaw_acc = 50`、`max_roll_acc = 100`、
-  `q_yaw_pos = q_roll_pos = 9000000`、`q_yaw_vel = q_roll_vel = 0`、`r = 1`。MPC 关闭、
-  求解失败或输出偏离参考超过 `mpc_fire_thresh` 时，回退为不带前馈的直接 yaw/roll 命令。
-- `host/fire_notify` 绑定单发弹丸的未来命中候选：在开火采样点（中点后 `fire_delay_s`，为 0
-  时取 2 个采样）按计划枪线遍历所有物理装甲面，选择角误差最小的命中面，再检查该面命中时刻
-  是否可打。
-- 开火需要 `auto_fire` 打开、命中面可打、计划枪线与命中候选一致、本帧命令与上一帧命令之差
-  小于阈值的 2 倍，且同帧 IMU 给出的云台姿态与命令的偏差小于动态阈值。动态阈值由目标距离、
-  装甲尺寸和视角计算，并限制在 `min_fire_threshold` 到 `max_fire_threshold` 之间。
-- 运行期 info 日志（`enable_runtime_log`）只记录统计事件：弹速变化、开火状态翻转、热量上限/
-  冷却变化，以及每 30 次 MPC 规划一次的耗时；当前热量缺失时日志明确写 `heat=unknown`。
+`enable_runtime_log` 打开时，运行期 info 日志记录弹速变化、开火状态翻转、热量上限与冷却变化，以及每 30 次 MPC 规划一次的耗时；当前热量缺失时日志写 `heat=unknown`。`OnMonitor()` 输出 target_frame 回调的累计耗时统计（次数、平均、最小、最大，单位 μs）。
 
-`OnMonitor()` 打印 target_frame 回调的累计耗时统计（次数、平均、最小、最大，单位微秒）。
+`cfg.preview.enabled` 为 `true` 时，Aimer 内置预览，使用 `target_frame` 中的源图像和同帧 IMU 绘制：
 
-## 预览
-
-`Aimer` 内置 preview 是可选功能（`cfg.preview.enabled`），不参与瞄准决策。它使用
-`target_frame` 中的源图像和同帧 IMU 绘制：
-
-- tracker 整车几何展开后的装甲面轮廓和中心（前向面绿色、背向面紫色，当前绑定面加粗）以及
-  相邻面连线。
+- tracker 整车几何展开后的装甲面轮廓和中心（前向面绿色、背向面紫色，当前绑定面加粗）以及相邻面连线。
 - 预测选中装甲面的轮廓和瞄点标记：不开火时为橙色，开火时为红色并加圆圈。
 - 顶部状态行：跟踪状态、目标编号、绑定面、瞄准面和开火状态。
 
-预览不会订阅原始图像、detector 结果或 host 输出，也不会输出调试 topic。
+预览使用 `calibration` 的内参和畸变系数投影到原生像素，再根据当前帧 geometry 映射到图像坐标，因此 wide 与 centered ROI 共用同一套标定。每帧的 ROI、下采样和翻转关系读取自 `target_frame.image.Get()->geometry`。标定无效或需要先去畸变的模型不生成预览投影点。预览不进入瞄准、弹道和开火的计算。
 
-预览重投影使用原生相机内参和畸变系数投影到原生像素，再根据当前帧 geometry 映射到图像坐标，
-因此 wide 和 centered ROI 共用同一套标定。每帧 ROI、下采样和翻转关系只从
-`target_frame.image.Get()->geometry` 读取。无效标定或需要预先去畸变的模型不生成预览投影点；
-此处理不改变弹道和开火策略。在 BSP 里只实例化 `Aimer`，不要单独实例化 `AimerPreview`。
+Aimer subscribes to `target_frame` in the `tracker` domain (a `const TrackedFrame*` published by ArmorTracker, holding the `SharedFrame` image ownership and carrying the same-frame IMU, the `ArmorTrackerTarget` and the projection transform by value). For each frame, Aimer selects the armor plate to aim at, predicts the target motion, solves the mechanical pitch-axis roll and the yaw, and publishes the gimbal target `target_euler` and the fire permission `fire_notify` in the `host` domain. The same-frame IMU quaternion also serves as the current gimbal attitude for the alignment check of the automatic fire. When the target is lost or the ballistic solution does not exist, the gimbal target is all zero and the fire permission is `false`.
 
-## 职责
+The prediction delay is `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s + gimbal_response_delay_s`, plus `high_speed_extra_predict_s` or `low_speed_extra_predict_s` depending on whether `|v_yaw|` exceeds `yaw_rate_threshold`. Aimer predicts the target to the delayed time, selects the aim point, predicts again by the projectile flight time and selects the aim point again.
 
-- Aimer 不负责目标跟踪，也不修改同步链路。
-- Aimer 直接发布 DevC 接口的 `host/target_euler` 和 `host/fire_notify`。
-- Aimer 的输入以 `ArmorTrackerTarget` 字段和显式预测延迟配置为准。
-- 相机标定只影响内置预览投影，不进入控制、弹道或 MPC 计算。
-- 运行日志不参与控制闭环；热量反馈缺失时不会伪造当前热量。
+The ballistics use a quadratic air-drag model (`a = -k·|v|·v`): for a given launch elevation the projectile motion is integrated with RK4, and the elevation is found by bracketed bisection within `[ballistic_min_elevation_deg, ballistic_max_elevation_deg]`; an empty command is output when no solution exists. The per-sample commands of the TinyMPC reference trajectory use a drag-free analytic ballistic approximation.
 
-## 依赖
+The gimbal target is generated by a double-integrator TinyMPC on the yaw and roll axes. The reference trajectory covers `PLAN_HORIZON = 75` samples (`dt = 0.01 s`) and reselects the geometrically nearest armor plate at every sample, so that the gimbal starts decelerating before a plate switch; the output is the state at the window midpoint `PLAN_HALF_HORIZON = 37`, including the angle, angular-velocity and angular-acceleration feedforward. When the MPC is disabled, fails to solve, or deviates from the reference by more than `mpc_fire_thresh`, the direct yaw and roll commands are output with zero velocity and acceleration feedforward.
 
-- `QDU-Robomaster/ArmorTracker`：`TrackedFrame` / `ArmorTrackerTarget` 类型和 `target_frame`
-  输入。
-- `QDU-Robomaster/CameraBase`：标定、帧布局和 geometry 类型。
-- `QDU-Robomaster/VisionPreview`：预览输出。
-- `xrobot-org/DurationStatistics`：回调耗时统计。
-- `QDU-Robomaster/Referee`：`Referee::RobotGameRefereePack` 裁判摘要类型。
-- 外部：OpenCV 4（`core`、`calib3d`）、Eigen；仓库内置 TinyMPC（`tinympc/`）。
+The fire permission is bound to the future hit candidate of a single projectile: at the fire sampling point (`fire_delay_s` after the midpoint, 2 samples when it is 0), all physical armor faces are traversed along the planned gun line, the hit face with the smallest angular error is selected, and then it is checked whether that face can be hit at the hit time. `fire_notify` is `true` when:
 
-## 构造接口
+- `auto_fire` is on, the hit face can be hit, and the planned gun line matches the hit candidate.
+- The difference between this frame's command and the previous frame's command is below twice the dynamic threshold.
+- The gimbal attitude from the same-frame IMU deviates from the command by less than the dynamic threshold. The dynamic threshold is computed from the target distance, armor size and view angle, and limited to `min_fire_threshold` to `max_fire_threshold`.
+
+The referee Topic in the `host` domain (name set by `referee_topic`) provides the heat limit and cooling value used for logging. The bullet speed is `default_bullet_speed`, which is also used when the bullet speed is below `min_valid_bullet_speed`.
+
+With `enable_runtime_log` on, the runtime info log records bullet-speed changes, fire-state flips, heat-limit and cooling changes, and the duration of every 30th MPC planning; the log shows `heat=unknown` while the current heat is unavailable. `OnMonitor()` outputs the accumulated duration statistics of the target_frame callback (count, average, minimum, maximum, in μs).
+
+With `cfg.preview.enabled` set to `true`, Aimer provides a built-in preview drawn from the source image in `target_frame` and the same-frame IMU:
+
+- The armor-face outlines and centers of the tracker's whole-vehicle geometry (front faces green, back faces purple, the currently bound face in bold) and the lines between adjacent faces.
+- The outline of the predicted selected armor face and the aim-point marker: orange when not firing, red with a circle when firing.
+- A status line at the top: tracking state, target id, bound face, aimed face and fire state.
+
+The preview projects with the intrinsics and distortion coefficients of `calibration` to native pixels and then maps them to image coordinates according to the geometry of the current frame, so wide and centered ROIs share one calibration. The ROI, downsampling and flip of each frame are read from `target_frame.image.Get()->geometry`. An invalid calibration or a model that requires undistortion first produces no preview projection points. The preview is independent of the aiming, ballistic and fire computations.
+
+## 2. 坐标约定 / Coordinate Convention
+
+`ArmorTrackerTarget` 使用右手系，`x` 向右、`y` 向前、`z` 向上。Aimer 的 yaw 以前向为 0、左转为正；水平距离在 `x-y` 平面内计算，高度取 `z`。
+
+`ArmorTrackerTarget` uses a right-handed frame with `x` to the right, `y` forward and `z` up. The Aimer yaw is 0 forward and positive to the left; the horizontal distance is computed in the `x-y` plane and the height is `z`.
+
+## 3. 构造接口 / Constructor
 
 ```cpp
 template <CameraTypes::FrameLayout FrameLayoutV>
 class Aimer : public AimerCore;
 
-Aimer(
-    Config cfg = DefaultConfig(),
-    CameraCalibration calibration = DefaultCalibration());
+Aimer(Config cfg = DefaultConfig(),
+      CameraCalibration calibration = DefaultCalibration());  // 节选 / excerpt
 ```
 
 模板参数：
 
-- `FrameLayoutV`：帧布局，必须与上游相机和 ArmorTracker 相同。
+- `FrameLayoutV`：帧布局，与上游相机和 ArmorTracker 的帧布局相同。
 
-依赖：无构造依赖参数；`target_frame` 和裁判输入通过 topic 订阅。
+模块通过 Topic 接收输入，构造参数均为配置参数：
 
-配置：
-
-- `cfg`（`AimerConfig`，`DefaultConfig()` 即全部默认值）：
+- `cfg`（`AimerConfig`，`DefaultConfig()` 为全部默认值）：
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -127,10 +86,10 @@ Aimer(
 | `roll_offset` | `-1.4` | 施加到机械 roll 轴命令的固定偏置，deg。 |
 | `yaw_rate_threshold` | `2.0` | 高/低速预测补偿的 yaw 角速度阈值，rad/s。 |
 | `default_bullet_speed` | `21.0` | 弹速，m/s。 |
-| `min_valid_bullet_speed` | `14.0` | 低于该值时改用 `default_bullet_speed`，m/s。 |
+| `min_valid_bullet_speed` | `14.0` | 弹速低于该值时改用 `default_bullet_speed`，m/s。 |
 | `ballistic_drag_k` | `0.02` | 二次阻力系数 `k`。 |
-| `ballistic_integration_dt_s` | `0.001` | RK4 积分步长，s。 |
-| `ballistic_max_iterations` | `16` | 仰角求根最大迭代次数（限制在 4–64）。 |
+| `ballistic_integration_dt_s` | `0.001` | RK4 积分步长，s（限制在 0.0001 到 0.02）。 |
+| `ballistic_max_iterations` | `16` | 仰角求根最大迭代次数（限制在 4 到 64）。 |
 | `ballistic_min_elevation_deg` / `ballistic_max_elevation_deg` | `-20.0` / `35.0` | 仰角搜索范围，deg。 |
 | `auto_fire` | `true` | 是否启用自动开火门控。 |
 | `image_to_now_s`、`vision_to_command_delay_s`、`command_transport_delay_s`、`gimbal_response_delay_s` | `0.0` | 预测延迟各分量，s。 |
@@ -139,109 +98,167 @@ Aimer(
 | `min_fire_threshold` / `max_fire_threshold` | `0.003` / `0.05` | 动态开火角度阈值范围，rad。 |
 | `enable_mpc_plan` | `true` | 是否启用 TinyMPC 云台计划。 |
 | `mpc_fire_thresh` | `0.05` | 允许使用 MPC 输出和开火的最大计划偏离，rad。 |
-| `max_yaw_acc`、`q_yaw_pos`、`q_yaw_vel`、`r_yaw_acc` | `50.0`、`9000000.0`、`0.0`、`1.0` | yaw 轴 MPC 约束与代价。 |
-| `max_roll_acc`、`q_roll_pos`、`q_roll_vel`、`r_roll_acc` | `100.0`、`9000000.0`、`0.0`、`1.0` | roll 轴 MPC 约束与代价。 |
+| `max_yaw_acc`、`q_yaw_pos`、`q_yaw_vel`、`r_yaw_acc` | `50.0`、`9000000.0`、`0.0`、`1.0` | yaw 轴 MPC 加速度约束（rad/s^2）与代价。 |
+| `max_roll_acc`、`q_roll_pos`、`q_roll_vel`、`r_roll_acc` | `100.0`、`9000000.0`、`0.0`、`1.0` | roll 轴 MPC 加速度约束（rad/s^2）与代价。 |
 | `preview` | 关闭 | `VisionPreview::RuntimeParam`，字段见 VisionPreview。 |
 | `enable_runtime_log` | `true` | 是否输出运行期统计日志。 |
 | `bullet_speed_log_delta` / `heat_log_delta` | `0.05` / `1.0` | 弹速、热量日志的变化阈值。 |
-| `convert_raw_gimbal_quat_to_body` | `false` | 仅作用于内部 `ahrs_quaternion` 回调；该输入当前未注册，不影响运行。 |
-| `referee_topic` | `"robot_game_ref"` | `host` 域裁判话题名。 |
+| `convert_raw_gimbal_quat_to_body` | `false` | 原始云台四元数到 body 轴的转换开关。 |
+| `referee_topic` | `"robot_game_ref"` | `host` 域裁判 Topic 名称，须非空。 |
 
-- `calibration`：原生相机标定，只用于预览投影，构造时检查其合理性。默认
-  `DefaultCalibration()` 为 1280x720、`fx = fy = 800`、主点 `(640, 360)`、零畸变；启用预览时
-  应传入与相机一致的标定。
+- `calibration`：原生相机标定，用于预览投影，构造时检查其合理性。默认 `DefaultCalibration()` 为 1280x720、`fx = fy = 800`、主点 `(640, 360)`、零畸变；启用预览时传入与相机一致的标定。
 
-## 使用
+Template parameter:
 
-```sh
-xrobot module add QDU-Robomaster/Aimer
-xrobot setup
-xrobot instance add QDU-Robomaster/Aimer
-```
+- `FrameLayoutV`: frame layout, identical to that of the upstream camera and ArmorTracker.
 
-`xrobot instance add` 在 `User/xrobot.yaml` 中写入一个实例，默认值按源码写出；本模块没有需要
-填写的依赖。帧布局用 constexpr 定义，必须与相机输出一致：
+The Module receives its inputs through Topics; all constructor parameters are configuration:
+
+- `cfg` (`AimerConfig`; `DefaultConfig()` holds all defaults):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `yaw_offset` | `-1.0` | Fixed bias applied to the yaw command, in deg. |
+| `roll_offset` | `-1.4` | Fixed bias applied to the mechanical roll-axis command, in deg. |
+| `yaw_rate_threshold` | `2.0` | Yaw angular-velocity threshold for the high/low-speed prediction compensation, in rad/s. |
+| `default_bullet_speed` | `21.0` | Bullet speed, in m/s. |
+| `min_valid_bullet_speed` | `14.0` | `default_bullet_speed` is used when the bullet speed is below this value, in m/s. |
+| `ballistic_drag_k` | `0.02` | Quadratic drag coefficient `k`. |
+| `ballistic_integration_dt_s` | `0.001` | RK4 integration step, in s (limited to 0.0001 to 0.02). |
+| `ballistic_max_iterations` | `16` | Maximum iterations of the elevation root search (limited to 4 to 64). |
+| `ballistic_min_elevation_deg` / `ballistic_max_elevation_deg` | `-20.0` / `35.0` | Elevation search range, in deg. |
+| `auto_fire` | `true` | Enables the automatic fire gating. |
+| `image_to_now_s`, `vision_to_command_delay_s`, `command_transport_delay_s`, `gimbal_response_delay_s` | `0.0` | Components of the prediction delay, in s. |
+| `fire_delay_s` | `0.0` | Delay from the fire command to the projectile leaving the barrel, determines the fire sampling point, in s. |
+| `low_speed_extra_predict_s` / `high_speed_extra_predict_s` | `0.015` / `0.03` | Extra prediction for low-speed / high-speed targets, in s. |
+| `min_fire_threshold` / `max_fire_threshold` | `0.003` / `0.05` | Range of the dynamic fire angle threshold, in rad. |
+| `enable_mpc_plan` | `true` | Enables the TinyMPC gimbal plan. |
+| `mpc_fire_thresh` | `0.05` | Maximum plan deviation for using the MPC output and firing, in rad. |
+| `max_yaw_acc`, `q_yaw_pos`, `q_yaw_vel`, `r_yaw_acc` | `50.0`, `9000000.0`, `0.0`, `1.0` | Yaw-axis MPC acceleration constraint (rad/s^2) and costs. |
+| `max_roll_acc`, `q_roll_pos`, `q_roll_vel`, `r_roll_acc` | `100.0`, `9000000.0`, `0.0`, `1.0` | Roll-axis MPC acceleration constraint (rad/s^2) and costs. |
+| `preview` | disabled | `VisionPreview::RuntimeParam`; see VisionPreview for the fields. |
+| `enable_runtime_log` | `true` | Enables the runtime statistics log. |
+| `bullet_speed_log_delta` / `heat_log_delta` | `0.05` / `1.0` | Change thresholds of the bullet-speed and heat logs. |
+| `convert_raw_gimbal_quat_to_body` | `false` | Switch for converting the raw gimbal quaternion to the body axes. |
+| `referee_topic` | `"robot_game_ref"` | Name of the referee Topic in the `host` domain; non-empty. |
+
+- `calibration`: native camera calibration used for the preview projection, checked for plausibility at construction. The default `DefaultCalibration()` is 1280x720 with `fx = fy = 800`, principal point `(640, 360)` and zero distortion; with the preview enabled, a calibration matching the camera is passed.
+
+## 4. Topic
+
+| Topic | 方向 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `tracker/target_frame` | 订阅 | `const TrackedFrame<FrameLayoutV>*` | ArmorTracker 发布的目标帧，含同源图像与同帧 IMU |
+| `host/<referee_topic>`（默认 `robot_game_ref`） | 订阅 | `Referee::RobotGameRefereePack` | 裁判数据，热量上限与冷却值用于日志 |
+| `host/target_euler` | 发布 | `AimerHostGimbalTarget` | 云台目标：角度、角速度、角加速度前馈，单位 rad、rad/s、rad/s^2；机械俯仰轴使用 `rol*` 字段，`pit*` 字段取相同的值 |
+| `host/fire_notify` | 发布 | `AimerHostFireNotify` | 发射许可，值与最终云台计划的开火门控一致 |
+
+| Topic | Direction | Type | Meaning |
+| --- | --- | --- | --- |
+| `tracker/target_frame` | Subscribe | `const TrackedFrame<FrameLayoutV>*` | Target frame published by ArmorTracker, with the source image and the same-frame IMU |
+| `host/<referee_topic>` (default `robot_game_ref`) | Subscribe | `Referee::RobotGameRefereePack` | Referee data; the heat limit and cooling value are used for logging |
+| `host/target_euler` | Publish | `AimerHostGimbalTarget` | Gimbal target: angle, angular-velocity and angular-acceleration feedforward, in rad, rad/s, rad/s^2; the mechanical pitch axis uses the `rol*` fields and the `pit*` fields hold the same values |
+| `host/fire_notify` | Publish | `AimerHostFireNotify` | Fire permission, equal to the fire gating of the final gimbal plan |
+
+## 5. 配置示例 / Configuration Example
+
+`xrobot instance add QDU-Robomaster/Aimer` 写入的实例，`template_args` 填写为帧布局，`calibration` 引用相机标定，`cfg` 按实机调整。帧布局与标定以 constexpr 定义，与相机输出一致：
+
+An instance written by `xrobot instance add QDU-Robomaster/Aimer`, with `template_args` set to the frame layout, `calibration` referring to the camera calibration and `cfg` adjusted on the machine. The frame layout and the calibration are defined as constexprs matching the camera output:
 
 ```yaml
+constexpr_namespace: AimerExample
 constexpr_includes:
   - CameraBase.hpp
 constexprs:
   FrameLayout:
     type: CameraTypes::FrameLayout
-    value: '{.width = 640, .height = 480, .step = 1920, .encoding = CameraTypes::Encoding::BGR8}'
+    value: '{.width = 720, .height = 540, .step = 2160, .encoding = CameraTypes::Encoding::BGR8}'
+  MainCameraCalibration:
+    type: CameraTypes::CameraCalibration
+    value: '{.native_width = 1440, .native_height = 1080, .camera_matrix = {2348.0610281828863, 0.0, 753.7199990513768, 0.0, 2341.430205137848, 544.3093638576938, 0.0, 0.0, 1.0}, .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB, .distortion_coefficients = {-0.09324913488777978, 0.3089185338125273, 0.0011528970103605383, -0.0010514494107999794, 0.0}, .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}, .projection_matrix = {2334.0852301109603, 0.0, 753.2190261545588, 0.0, 0.0, 2331.8191930180155, 544.7774518626655, 0.0, 0.0, 0.0, 1.0, 0.0}}'
 modules:
   - module: QDU-Robomaster/Aimer
-    id: aimer_0
+    id: aimer
     template_args:
-      - ProjectConstexpr::FrameLayout
+      - AimerExample::FrameLayout
     args:
-      - cfg: Aimer<ProjectConstexpr::FrameLayout>::DefaultConfig()
-      - calibration: Aimer<ProjectConstexpr::FrameLayout>::DefaultCalibration()
+      - cfg:
+          yaw_offset: -0.4
+          roll_offset: -1.6
+          yaw_rate_threshold: 2.0
+          default_bullet_speed: 21.0
+          min_valid_bullet_speed: 14.0
+          ballistic_drag_k: 0.02
+          ballistic_integration_dt_s: 0.001
+          ballistic_max_iterations: 16
+          ballistic_min_elevation_deg: -20.0
+          ballistic_max_elevation_deg: 35.0
+          auto_fire: true
+          image_to_now_s: 0.0
+          vision_to_command_delay_s: 0.0
+          command_transport_delay_s: 0.0
+          gimbal_response_delay_s: 0.0
+          fire_delay_s: 0.05
+          low_speed_extra_predict_s: 0.075
+          high_speed_extra_predict_s: 0.075
+          min_fire_threshold: 0.06
+          max_fire_threshold: 0.48
+          enable_mpc_plan: true
+          mpc_fire_thresh: 0.48
+          max_yaw_acc: 50.0
+          q_yaw_pos: 9000000.0
+          q_yaw_vel: 0.0
+          r_yaw_acc: 1.0
+          max_roll_acc: 100.0
+          q_roll_pos: 9000000.0
+          q_roll_vel: 0.0
+          r_roll_acc: 1.0
+          preview:
+            enabled: true
+            preview_window_name: "aimer_preview"
+            preview_scale: 0.5
+            preview_wait_key_ms: 1
+            queue_capacity: 1
+            output_mode: "web"
+            web_bind_address: "0.0.0.0"
+            web_port: 8083
+            web_stream_name: "aimer_preview"
+            max_fps: 30.0
+          enable_runtime_log: true
+          bullet_speed_log_delta: 0.05
+          heat_log_delta: 1.0
+          convert_raw_gimbal_quat_to_body: false
+          referee_topic: "robot_game_ref"
+      - calibration: AimerExample::MainCameraCalibration
 ```
 
-本模块不使用 BSP 对象，不需要 `XR_REGISTER`。它通过 `tracker/target_frame` 接收同一
-`template_args` 的 ArmorTracker 实例输出，通常列在 ArmorTracker 之后。
+`template_args` 与同一相机链路上 ArmorTracker 实例的 `template_args` 相同，Aimer 实例列在 ArmorTracker 实例之后。
 
-`cfg` 也可以写成 YAML map（字段名同上表，字符串写成 C++ 字符串字面量），`calibration` 可以
-引用 `CameraTypes::CameraCalibration` 类型的 constexpr。例如打开 Web 预览并设置弹速：
+The `template_args` equal those of the ArmorTracker instance on the same camera chain, and the Aimer instance is listed after the ArmorTracker instance.
 
-```yaml
-cfg:
-  yaw_offset: 0.0
-  roll_offset: 0.0
-  yaw_rate_threshold: 2.0
-  default_bullet_speed: 23.0
-  min_valid_bullet_speed: 14.0
-  ballistic_drag_k: 0.02
-  ballistic_integration_dt_s: 0.001
-  ballistic_max_iterations: 16
-  ballistic_min_elevation_deg: -20.0
-  ballistic_max_elevation_deg: 35.0
-  auto_fire: true
-  image_to_now_s: 0.0
-  vision_to_command_delay_s: 0.0
-  command_transport_delay_s: 0.0
-  gimbal_response_delay_s: 0.0
-  fire_delay_s: 0.0
-  low_speed_extra_predict_s: 0.015
-  high_speed_extra_predict_s: 0.03
-  min_fire_threshold: 0.003
-  max_fire_threshold: 0.05
-  enable_mpc_plan: true
-  mpc_fire_thresh: 0.05
-  max_yaw_acc: 50.0
-  q_yaw_pos: 9000000.0
-  q_yaw_vel: 0.0
-  r_yaw_acc: 1.0
-  max_roll_acc: 100.0
-  q_roll_pos: 9000000.0
-  q_roll_vel: 0.0
-  r_roll_acc: 1.0
-  preview:
-    enabled: true
-    preview_window_name: '"aimer_preview"'
-    preview_scale: 0.5
-    preview_wait_key_ms: 1
-    queue_capacity: 1
-    output_mode: '"web"'
-    web_bind_address: '"0.0.0.0"'
-    web_port: 8080
-    web_stream_name: '"aimer_preview"'
-    max_fps: 30.0
-  enable_runtime_log: true
-  bullet_speed_log_delta: 0.05
-  heat_log_delta: 1.0
-  convert_raw_gimbal_quat_to_body: false
-  referee_topic: '"robot_game_ref"'
-```
+## 6. 依赖与硬件 / Dependencies and Hardware
 
-填好后再次运行 `xrobot setup`，生成 `User/xrobot_main.hpp`。
+依赖：
 
-`xrobot module show .`（在本仓库中）或 `xrobot module show Modules/QDU-Robomaster/Aimer`
-（在 BSP 中）打印当前的构造函数。
+- `QDU-Robomaster/ArmorTracker`：`TrackedFrame` / `ArmorTrackerTarget` 类型与 `target_frame` 输入。
+- `QDU-Robomaster/CameraBase`：标定、帧布局与 geometry 类型。
+- `QDU-Robomaster/VisionPreview`：预览输出。
+- `QDU-Robomaster/Referee`：`Referee::RobotGameRefereePack` 裁判数据类型。
+- `xrobot-org/DurationStatistics`：回调耗时统计。
+- LibXR、OpenCV 4（`core`、`calib3d`）、Eigen。
+- `tinympc/` 下的 TinyMPC 源码为第三方代码（MIT），来源与修改说明见 [NOTICE](NOTICE)，其 `.cpp` 由 CMake 编译进 `xr`。
 
-## 测试
+硬件：云台由 DevC 控制，接收 `host` 域的 `target_euler` 与 `fire_notify`。
 
-在打开 `BUILD_TESTING` 的 BSP 构建中，本模块加入 `aimer_preview_geometry_test`、
-`aimer_stage_frame_access_test`，以及用默认和自定义裁判话题名运行的
-`aimer_referee_default_topic_test` / `aimer_referee_sentry_topic_test`，用 `ctest` 运行。
+Dependencies:
+
+- `QDU-Robomaster/ArmorTracker`: the `TrackedFrame` / `ArmorTrackerTarget` types and the `target_frame` input.
+- `QDU-Robomaster/CameraBase`: calibration, frame layout and geometry types.
+- `QDU-Robomaster/VisionPreview`: preview output.
+- `QDU-Robomaster/Referee`: the `Referee::RobotGameRefereePack` referee data type.
+- `xrobot-org/DurationStatistics`: callback duration statistics.
+- LibXR, OpenCV 4 (`core`, `calib3d`) and Eigen.
+- The TinyMPC sources under `tinympc/` are third-party code (MIT); see [NOTICE](NOTICE) for the origin and modifications. Its `.cpp` files are compiled into `xr` by CMake.
+
+Hardware: the gimbal is controlled by DevC, which receives `target_euler` and `fire_notify` of the `host` domain.
