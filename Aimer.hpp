@@ -7,7 +7,7 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: ballistic aimer with DevC host target output
+module_description: 弹道瞄准模块：选择装甲板、预测目标运动并解算云台目标与发射许可 / Ballistic aiming Module that selects the armor plate, predicts the target motion and solves the gimbal target and fire permission
 depends:
 - id: QDU-Robomaster/ArmorTracker
   ref: same-or-dev
@@ -54,19 +54,19 @@ struct AimerHostGimbalTarget
 {
   /// 机械俯仰轴 roll 命令，单位 rad。
   float rol{0.0f};
-  /// 兼容旧 C 板接口，镜像当前机械俯仰轴 roll 命令。
+  /// 与 rol 相同的机械俯仰轴 roll 命令。
   float pit{0.0f};
   /// yaw 命令，单位 rad。
   float yaw{0.0f};
   /// 机械俯仰轴 roll 速度前馈，单位 rad/s。
   float rol_dot{0.0f};
-  /// 兼容旧 C 板接口，镜像当前机械俯仰轴 roll 速度前馈。
+  /// 与 rol_dot 相同的机械俯仰轴 roll 速度前馈。
   float pit_dot{0.0f};
   /// yaw 速度前馈，单位 rad/s。
   float yaw_dot{0.0f};
   /// 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
   float rol_ddot{0.0f};
-  /// 兼容旧 C 板接口，镜像当前机械俯仰轴 roll 加速度前馈。
+  /// 与 rol_ddot 相同的机械俯仰轴 roll 加速度前馈。
   float pit_ddot{0.0f};
   /// yaw 加速度前馈，单位 rad/s^2。
   float yaw_ddot{0.0f};
@@ -241,7 +241,7 @@ class AimerCore
    */
   void UpdateGimbalRotationFromSyncedImu(const std::array<float, 4>& rotation_wxyz);
   /**
-   * @brief 清空当前可用的云台姿态，禁止自动开火门控继续使用旧姿态。
+   * @brief 清空当前云台姿态，自动开火门控在下一次姿态更新前不通过。
    */
   void ClearGimbalRotation();
   /**
@@ -372,11 +372,6 @@ class Aimer : public AimerCore
   using TargetFrame = TrackedFrame<FrameLayoutV>;
   using TargetFrameMessage = TrackedFrameMessage<FrameLayoutV>;
 
-  /**
-   * @brief 构造瞄准模块，并固定预览使用的原生相机标定。
-   *
-   * @param calibration 原生传感器坐标系下的不可变相机标定，按值持有。
-   */
   static Config DefaultConfig() { return {}; }
 
   static CameraCalibration DefaultCalibration() { return {.native_width = 1280, .native_height = 720, .camera_matrix = {800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0}, .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB, .distortion_coefficients = {0.0, 0.0, 0.0, 0.0, 0.0}, .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}, .projection_matrix = {800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0, 0.0, 1.0, 0.0}}; }
