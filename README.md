@@ -162,9 +162,9 @@ The Module receives its inputs through Topics; all constructor parameters are co
 
 ## 5. 配置示例 / Configuration Example
 
-`xrobot instance add QDU-Robomaster/Aimer` 写入的实例，`template_args` 填写为帧布局，`calibration` 引用相机标定，`cfg` 按实机调整。帧布局与标定以 constexpr 定义，与相机输出一致：
+`xrobot instance add QDU-Robomaster/Aimer` 写入的实例，`template_args` 填写为帧布局，`calibration` 引用相机标定，`cfg` 为 `DefaultConfig()` 的全部默认值，也可写成以字段名为键的映射（字段见第 3 节）。帧布局与标定以 constexpr 定义，与相机输出一致：
 
-An instance written by `xrobot instance add QDU-Robomaster/Aimer`, with `template_args` set to the frame layout, `calibration` referring to the camera calibration and `cfg` adjusted on the machine. The frame layout and the calibration are defined as constexprs matching the camera output:
+An instance written by `xrobot instance add QDU-Robomaster/Aimer`, with `template_args` set to the frame layout, `calibration` referring to the camera calibration and `cfg` holding all defaults of `DefaultConfig()`; `cfg` can also be written as a mapping keyed by the field names (fields in section 3). The frame layout and the calibration are defined as constexprs matching the camera output:
 
 ```yaml
 constexpr_namespace: AimerExample
@@ -183,53 +183,7 @@ modules:
     template_args:
       - AimerExample::FrameLayout
     args:
-      - cfg:
-          yaw_offset: -0.4
-          roll_offset: -1.6
-          yaw_rate_threshold: 2.0
-          default_bullet_speed: 21.0
-          min_valid_bullet_speed: 14.0
-          ballistic_drag_k: 0.02
-          ballistic_integration_dt_s: 0.001
-          ballistic_max_iterations: 16
-          ballistic_min_elevation_deg: -20.0
-          ballistic_max_elevation_deg: 35.0
-          auto_fire: true
-          image_to_now_s: 0.0
-          vision_to_command_delay_s: 0.0
-          command_transport_delay_s: 0.0
-          gimbal_response_delay_s: 0.0
-          fire_delay_s: 0.05
-          low_speed_extra_predict_s: 0.075
-          high_speed_extra_predict_s: 0.075
-          min_fire_threshold: 0.06
-          max_fire_threshold: 0.48
-          enable_mpc_plan: true
-          mpc_fire_thresh: 0.48
-          max_yaw_acc: 50.0
-          q_yaw_pos: 9000000.0
-          q_yaw_vel: 0.0
-          r_yaw_acc: 1.0
-          max_roll_acc: 100.0
-          q_roll_pos: 9000000.0
-          q_roll_vel: 0.0
-          r_roll_acc: 1.0
-          preview:
-            enabled: true
-            preview_window_name: "aimer_preview"
-            preview_scale: 0.5
-            preview_wait_key_ms: 1
-            queue_capacity: 1
-            output_mode: "web"
-            web_bind_address: "0.0.0.0"
-            web_port: 8083
-            web_stream_name: "aimer_preview"
-            max_fps: 30.0
-          enable_runtime_log: true
-          bullet_speed_log_delta: 0.05
-          heat_log_delta: 1.0
-          convert_raw_gimbal_quat_to_body: false
-          referee_topic: "robot_game_ref"
+      - cfg: Aimer<AimerExample::FrameLayout>::DefaultConfig()
       - calibration: AimerExample::MainCameraCalibration
 ```
 
