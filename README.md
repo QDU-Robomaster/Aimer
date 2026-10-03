@@ -149,14 +149,14 @@ The Module receives its inputs through Topics; all constructor parameters are co
 | Topic | 方向 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | `tracker/target_frame` | 订阅 | `const TrackedFrame<FrameLayoutV>*` | ArmorTracker 发布的目标帧，含同源图像与同帧 IMU |
-| `host/<referee_topic>`（默认 `robot_game_ref`） | 订阅 | `Referee::RobotGameRefereePack` | 裁判数据，热量上限与冷却值用于日志 |
+| `host/<referee_topic>`（默认 `robot_game_ref`） | 订阅 | `RefereeTypes::RobotGameRefereePack` | 裁判数据，热量上限与冷却值用于日志 |
 | `host/target_euler` | 发布 | `AimerHostGimbalTarget` | 云台目标：角度、角速度、角加速度前馈，单位 rad、rad/s、rad/s^2；机械俯仰轴使用 `rol*` 字段，`pit*` 字段取相同的值 |
 | `host/fire_notify` | 发布 | `AimerHostFireNotify` | 发射许可，值与最终云台计划的开火门控一致 |
 
 | Topic | Direction | Type | Meaning |
 | --- | --- | --- | --- |
 | `tracker/target_frame` | Subscribe | `const TrackedFrame<FrameLayoutV>*` | Target frame published by ArmorTracker, with the source image and the same-frame IMU |
-| `host/<referee_topic>` (default `robot_game_ref`) | Subscribe | `Referee::RobotGameRefereePack` | Referee data; the heat limit and cooling value are used for logging |
+| `host/<referee_topic>` (default `robot_game_ref`) | Subscribe | `RefereeTypes::RobotGameRefereePack` | Referee data; the heat limit and cooling value are used for logging |
 | `host/target_euler` | Publish | `AimerHostGimbalTarget` | Gimbal target: angle, angular-velocity and angular-acceleration feedforward, in rad, rad/s, rad/s^2; the mechanical pitch axis uses the `rol*` fields and the `pit*` fields hold the same values |
 | `host/fire_notify` | Publish | `AimerHostFireNotify` | Fire permission, equal to the fire gating of the final gimbal plan |
 
@@ -244,7 +244,7 @@ The `template_args` equal those of the ArmorTracker instance on the same camera 
 - `QDU-Robomaster/ArmorTracker`：`TrackedFrame` / `ArmorTrackerTarget` 类型与 `target_frame` 输入。
 - `QDU-Robomaster/CameraBase`：标定、帧布局与 geometry 类型。
 - `QDU-Robomaster/VisionPreview`：预览输出。
-- `QDU-Robomaster/Referee`：`Referee::RobotGameRefereePack` 裁判数据类型。
+- `QDU-Robomaster/Referee`：`RefereeTypes::RobotGameRefereePack` 裁判数据类型。
 - `xrobot-org/DurationStatistics`：回调耗时统计。
 - LibXR、OpenCV 4（`core`、`calib3d`）、Eigen。
 - `tinympc/` 下的 TinyMPC 源码为第三方代码（MIT），来源与修改说明见 [NOTICE](NOTICE)，其 `.cpp` 由 CMake 编译进 `xr`。
@@ -256,7 +256,7 @@ Dependencies:
 - `QDU-Robomaster/ArmorTracker`: the `TrackedFrame` / `ArmorTrackerTarget` types and the `target_frame` input.
 - `QDU-Robomaster/CameraBase`: calibration, frame layout and geometry types.
 - `QDU-Robomaster/VisionPreview`: preview output.
-- `QDU-Robomaster/Referee`: the `Referee::RobotGameRefereePack` referee data type.
+- `QDU-Robomaster/Referee`: the `RefereeTypes::RobotGameRefereePack` referee data type.
 - `xrobot-org/DurationStatistics`: callback duration statistics.
 - LibXR, OpenCV 4 (`core`, `calib3d`) and Eigen.
 - The TinyMPC sources under `tinympc/` are third-party code (MIT); see [NOTICE](NOTICE) for the origin and modifications. Its `.cpp` files are compiled into `xr` by CMake.

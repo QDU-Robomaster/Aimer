@@ -34,7 +34,7 @@ depends:
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
-#include "Referee.hpp"
+#include "RefereeTypes.hpp"
 #include "VisionPreview.hpp"
 #include "libxr.hpp"
 #include "libxr_def.hpp"
@@ -44,12 +44,12 @@ depends:
 #include "tinympc/tiny_api.hpp"
 
 /**
- * @brief 裁判输入使用 Referee 的公共数据类型。
- *        The referee input uses the public data types of Referee.
+ * @brief 裁判输入使用 RefereeTypes 的公共数据类型。
+ *        The referee input uses the public data types of RefereeTypes.
  */
-using AimerRefereeRobotStatus = Referee::RobotStatus;
-using AimerRefereeGameStatus = Referee::GameStatus;
-using AimerRefereeSummary = Referee::RobotGameRefereePack;
+using AimerRefereeRobotStatus = RefereeTypes::RobotStatus;
+using AimerRefereeGameStatus = RefereeTypes::GameStatus;
+using AimerRefereeSummary = RefereeTypes::RobotGameRefereePack;
 
 /**
  * @brief DevC HostData 接收的云台目标数据。
