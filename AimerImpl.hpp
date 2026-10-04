@@ -15,8 +15,7 @@
 /**
  * @brief 构造 Aimer 运行核心并注册 referee、gimbal 输入 topic 回调。
  */
-inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager& app,
-                            Config cfg)
+inline AimerCore::AimerCore(Config cfg)
     : cfg_(std::move(cfg)),
       referee_topic_name_(cfg_.referee_topic),
       bullet_speed_(cfg_.default_bullet_speed)
@@ -24,7 +23,6 @@ inline AimerCore::AimerCore(LibXR::HardwareContainer&, LibXR::ApplicationManager
   cfg_.referee_topic = referee_topic_name_.View();
   SetupGimbalPlanSolvers();
   RegisterHostInputCallbacks();
-  app.Register(*this);
 }
 
 /**
@@ -399,7 +397,6 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     preview_frame.have_host_fire = true;
     preview_frame.host_fire = host_fire;
     PublishPreviewState(preview_frame);
-
   };
 
   if (target_msg.id != last_target_id_)

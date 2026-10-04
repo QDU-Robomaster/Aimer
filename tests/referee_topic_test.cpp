@@ -37,8 +37,6 @@ int main(int argc, char** argv)
 {
   Expect(argc == 2, "topic argument required");
   LibXR::PlatformInit();
-  LibXR::HardwareContainer hw;
-  LibXR::ApplicationManager app;
   LibXR::Topic::Domain host("host");
   std::string configured_name = argv[1];
   const std::string selected_name = configured_name;
@@ -46,12 +44,12 @@ int main(int argc, char** argv)
       selected_name == "sentry_ref" ? "robot_game_ref" : "sentry_ref";
   auto selected = LibXR::Topic::CreateTopic<RefereeTypes::RobotGameRefereePack>(
       selected_name.c_str(), &host, true);
-  auto other = LibXR::Topic::CreateTopic<RefereeTypes::RobotGameRefereePack>(other_name,
-                                                                             &host, true);
+  auto other = LibXR::Topic::CreateTopic<RefereeTypes::RobotGameRefereePack>(
+      other_name, &host, true);
   AimerConfig config;
   config.referee_topic = configured_name;
   config.enable_runtime_log = true;
-  AimerCore aimer(hw, app, config);
+  AimerCore aimer(config);
   configured_name.assign(128, 'x');
 
   LogContext context{"source=" + selected_name};
