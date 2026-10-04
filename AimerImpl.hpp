@@ -382,7 +382,7 @@ inline bool AimerCore::HeatAwareFire(const AimerShotCandidate& shot_candidate,
   const double p_hit = AimerDetail::HitProbability(half_width, distance * gimbal_error_yaw, sigma);
 
   const double since_shot_s =
-      static_cast<double>(now_us - std::min(now_us, heat_fire_state_.last_shot_us)) * 1e-6;
+      static_cast<double>(now_us - std::min(now_us, heat_fire_state_.relax_ref_us)) * 1e-6;
   const double threshold = AimerDetail::HeatFireThreshold(
       cfg_.heat_fire_p_low, cfg_.heat_fire_p_high, cfg_.heat_fire_p_floor,
       cfg_.heat_fire_relax_s, heat_fire_state_.heat / limit, since_shot_s);
@@ -423,6 +423,11 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
   current_image_us_ = target_msg.image_timestamp_us;
   current_target_radius_ = target_msg.radius_1 > 0.05 ? target_msg.radius_1 : 0.2;
+  if (target_msg.tracking && (!heat_fire_tracking_ || target_msg.id != last_target_id_))
+  {
+    AimerDetail::StartEngagement(heat_fire_state_, current_image_us_);
+  }
+  heat_fire_tracking_ = target_msg.tracking;
   AimerPreviewFrame preview_frame{};
   preview_frame.image_timestamp_us = target_msg.image_timestamp_us;
   preview_frame.have_target = true;

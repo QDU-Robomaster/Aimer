@@ -34,6 +34,10 @@ int main()
   Expect(Near(state.heat, 8.0), "0.3 s of cooling at 40/s removes 12 heat");
   CoolHeat(state, 2'000'000U, 40.0);
   Expect(Near(state.heat, 0.0), "heat does not go below zero");
+  Expect(state.relax_ref_us == 1'050'000U, "the relaxation timer follows the last counted shot");
+  StartEngagement(state, 3'000'000U);
+  Expect(state.relax_ref_us == 3'000'000U && state.last_shot_us == 1'050'000U,
+         "a new target restarts the relaxation timer only");
 
   // Hit probability: wider plates and smaller bias hit more often.
   const double centred = HitProbability(0.05, 0.0, 0.03);

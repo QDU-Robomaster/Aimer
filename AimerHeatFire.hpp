@@ -35,9 +35,13 @@ struct HeatFireState
   /// 估计热量对应的时刻，单位 us
   /// Time of the heat estimate, in us
   uint64_t heat_time_us{0};
-  /// 上一发计入热量的时刻；初始化时为初始化时刻，单位 us
-  /// Time of the last counted shot; the initialisation time before the first shot, in us
+  /// 上一发计入热量的时刻，单位 us
+  /// Time of the last counted shot, in us
   uint64_t last_shot_us{0};
+  /// 放宽门槛的计时起点：上一发计入热量的时刻或开始跟踪当前目标的时刻，取较晚者，单位 us
+  /// Start of the relaxation timer: the later of the last counted shot and the start of
+  /// tracking the current target, in us
+  uint64_t relax_ref_us{0};
   /// 是否已有计入热量的出弹
   /// Whether a shot has been counted
   bool has_shot{false};
@@ -57,7 +61,7 @@ inline void CoolHeat(HeatFireState& state, uint64_t now_us, double cooling_per_s
     state = {};
     state.valid = true;
     state.heat_time_us = now_us;
-    state.last_shot_us = now_us;
+    state.relax_ref_us = now_us;
     return;
   }
   if (now_us > state.heat_time_us)
@@ -85,8 +89,22 @@ inline bool CountShot(HeatFireState& state, uint64_t now_us, double shot_heat,
   }
   state.heat += std::max(0.0, shot_heat);
   state.last_shot_us = now_us;
+  state.relax_ref_us = std::max(state.relax_ref_us, now_us);
   state.has_shot = true;
   return true;
+}
+
+/**
+ * @brief 开始跟踪一个目标时重新开始放宽计时，使新目标先按正常门槛挑选时机。
+ *        Restart the relaxation timer when a target starts to be tracked, so that a new
+ *        target is first judged with the normal threshold.
+ */
+inline void StartEngagement(HeatFireState& state, uint64_t now_us)
+{
+  if (state.valid)
+  {
+    state.relax_ref_us = std::max(state.relax_ref_us, now_us);
+  }
 }
 
 /**

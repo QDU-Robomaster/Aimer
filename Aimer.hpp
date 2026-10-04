@@ -617,6 +617,9 @@ class AimerCore
   /// 当前目标的装甲半径，单位 m
   /// Armor radius of the current target, in m
   double current_target_radius_{0.2};
+  /// 上一帧是否在跟踪目标，用于判断开始跟踪的时刻
+  /// Whether a target was tracked in the previous frame, to detect the start of tracking
+  bool heat_fire_tracking_{false};
   TinySolver* yaw_solver_{nullptr};
   TinySolver* roll_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
