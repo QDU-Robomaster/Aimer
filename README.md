@@ -18,7 +18,7 @@ Aimer 订阅 `tracker` 域的 `target_frame`（ArmorTracker 发布的 `const Tra
 - 本帧命令与上一帧命令之差小于动态阈值的 2 倍。
 - 同帧 IMU 给出的云台姿态与命令的偏差小于动态阈值。动态阈值由目标距离、装甲尺寸和视角计算，限制在 `min_fire_threshold` 到 `max_fire_threshold` 之间。
 
-`host` 域的裁判 Topic（名称由 `referee_topic` 配置）提供热量上限和冷却值，用于日志。弹速取 `default_bullet_speed`；弹速低于 `min_valid_bullet_speed` 时同样取该值。
+`host` 域的裁判 Topic（名称由 `referee_topic` 配置）提供热量上限和冷却值，用于日志。
 
 `enable_runtime_log` 打开时，运行期 info 日志记录弹速变化、开火状态翻转、热量上限与冷却变化，以及每 30 次 MPC 规划一次的耗时；当前热量缺失时日志写 `heat=unknown`。`OnMonitor()` 输出 target_frame 回调的累计耗时统计（次数、平均、最小、最大，单位 μs）。
 
@@ -44,7 +44,7 @@ The fire permission is bound to the future hit candidate of a single projectile:
 - The difference between this frame's command and the previous frame's command is below twice the dynamic threshold.
 - The gimbal attitude from the same-frame IMU deviates from the command by less than the dynamic threshold. The dynamic threshold is computed from the target distance, armor size and view angle, and limited to `min_fire_threshold` to `max_fire_threshold`.
 
-The referee Topic in the `host` domain (name set by `referee_topic`) provides the heat limit and cooling value used for logging. The bullet speed is `default_bullet_speed`, which is also used when the bullet speed is below `min_valid_bullet_speed`.
+The referee Topic in the `host` domain (name set by `referee_topic`) provides the heat limit and cooling value used for logging.
 
 With `enable_runtime_log` on, the runtime info log records bullet-speed changes, fire-state flips, heat-limit and cooling changes, and the duration of every 30th MPC planning; the log shows `heat=unknown` while the current heat is unavailable. `OnMonitor()` outputs the accumulated duration statistics of the target_frame callback (count, average, minimum, maximum, in μs).
 
@@ -86,7 +86,7 @@ Aimer(Config cfg = DefaultConfig(),
 | `roll_offset` | `-1.4` | 施加到机械 roll 轴命令的固定偏置，deg。 |
 | `yaw_rate_threshold` | `2.0` | 高/低速预测补偿的 yaw 角速度阈值，rad/s。 |
 | `default_bullet_speed` | `21.0` | 弹速，m/s。 |
-| `min_valid_bullet_speed` | `14.0` | 弹速低于该值时改用 `default_bullet_speed`，m/s。 |
+| `min_valid_bullet_speed` | `14.0` | 有效弹速的下限，m/s。 |
 | `ballistic_drag_k` | `0.02` | 二次阻力系数 `k`。 |
 | `ballistic_integration_dt_s` | `0.001` | RK4 积分步长，s（限制在 0.0001 到 0.02）。 |
 | `ballistic_max_iterations` | `16` | 仰角求根最大迭代次数（限制在 4 到 64）。 |
@@ -122,7 +122,7 @@ The Module receives its inputs through Topics; all constructor parameters are co
 | `roll_offset` | `-1.4` | Fixed bias applied to the mechanical roll-axis command, in deg. |
 | `yaw_rate_threshold` | `2.0` | Yaw angular-velocity threshold for the high/low-speed prediction compensation, in rad/s. |
 | `default_bullet_speed` | `21.0` | Bullet speed, in m/s. |
-| `min_valid_bullet_speed` | `14.0` | `default_bullet_speed` is used when the bullet speed is below this value, in m/s. |
+| `min_valid_bullet_speed` | `14.0` | Lower bound of a valid bullet speed, in m/s. |
 | `ballistic_drag_k` | `0.02` | Quadratic drag coefficient `k`. |
 | `ballistic_integration_dt_s` | `0.001` | RK4 integration step, in s (limited to 0.0001 to 0.02). |
 | `ballistic_max_iterations` | `16` | Maximum iterations of the elevation root search (limited to 4 to 64). |
