@@ -162,12 +162,12 @@ The Module receives its inputs through Topics; all constructor parameters are co
 
 ## 5. 配置示例 / Configuration Example
 
-`xrobot instance add QDU-Robomaster/Aimer` 写入的实例，`template_args` 填写为帧布局，`calibration` 引用相机标定，`cfg` 为 `DefaultConfig()` 的全部默认值，也可写成以字段名为键的映射（字段见第 3 节）。帧布局与标定以 constexpr 定义，与相机输出一致：
+`xrobot instance add QDU-Robomaster/Aimer --template-arg <FrameLayout>` 写入的实例，`template_args` 为帧布局，`calibration` 引用相机标定，`cfg` 为 `DefaultConfig()` 的全部默认值，也可写成以字段名为键的映射（字段见第 3 节）。帧布局与标定以 constexpr 定义，与相机输出一致：
 
-An instance written by `xrobot instance add QDU-Robomaster/Aimer`, with `template_args` set to the frame layout, `calibration` referring to the camera calibration and `cfg` holding all defaults of `DefaultConfig()`; `cfg` can also be written as a mapping keyed by the field names (fields in section 3). The frame layout and the calibration are defined as constexprs matching the camera output:
+An instance written by `xrobot instance add QDU-Robomaster/Aimer --template-arg <FrameLayout>`, with `template_args` holding the frame layout, `calibration` referring to the camera calibration and `cfg` holding all defaults of `DefaultConfig()`; `cfg` can also be written as a mapping keyed by the field names (fields in section 3). The frame layout and the calibration are defined as constexprs matching the camera output:
 
 ```yaml
-constexpr_namespace: AimerExample
+constexpr_namespace: AutoAimRunConfig
 constexpr_includes:
   - CameraBase.hpp
 constexprs:
@@ -181,10 +181,10 @@ modules:
   - module: QDU-Robomaster/Aimer
     id: aimer
     template_args:
-      - AimerExample::FrameLayout
+      - AutoAimRunConfig::FrameLayout
     args:
-      - cfg: Aimer<AimerExample::FrameLayout>::DefaultConfig()
-      - calibration: AimerExample::MainCameraCalibration
+      - cfg: Aimer<AutoAimRunConfig::FrameLayout>::DefaultConfig()
+      - calibration: AutoAimRunConfig::MainCameraCalibration
 ```
 
 `template_args` 与同一相机链路上 ArmorTracker 实例的 `template_args` 相同，Aimer 实例列在 ArmorTracker 实例之后。
