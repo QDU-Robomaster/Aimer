@@ -133,6 +133,10 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
  */
 inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
+  referee_heat_limit_.store(static_cast<double>(summary.robot_status.shooter_heat_limit),
+                            std::memory_order_relaxed);
+  referee_cooling_.store(static_cast<double>(summary.robot_status.shooter_cooling_value),
+                         std::memory_order_relaxed);
   UpdateBulletSpeed(cfg_.default_bullet_speed, referee_topic_name_.CStr());
   LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
                 static_cast<double>(summary.robot_status.shooter_heat_limit),
@@ -339,8 +343,58 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   const bool gimbal_aligned =
       gimbal_error_yaw < yaw_threshold && gimbal_error_roll < roll_threshold;
 
+  bool fire = command_stable && gimbal_aligned;
+  if (cfg_.heat_aware_fire)
+  {
+    fire = HeatAwareFire(shot_candidate, gimbal_error_yaw, fire);
+  }
   remember_command();
-  return command_stable && gimbal_aligned;
+  return fire;
+}
+
+/**
+ * @brief 在已有开火门控之后应用按热量分配的开火判定。
+ *
+ * 热量按裁判系统的热量上限和冷却值在本地推算：每次计入的开火加单发热量，按冷却值连续
+ * 衰减。命中概率按命中时刻装甲的投影半宽、实测云台误差和随预测时域增长的相位误差估计。
+ */
+inline bool AimerCore::HeatAwareFire(const AimerShotCandidate& shot_candidate,
+                                     double gimbal_error_yaw, bool gates_passed)
+{
+  const double limit = referee_heat_limit_.load(std::memory_order_relaxed);
+  const double cooling = referee_cooling_.load(std::memory_order_relaxed);
+  if (!(limit > 0.0))
+  {
+    return gates_passed;
+  }
+
+  const uint64_t now_us = current_image_us_;
+  AimerDetail::CoolHeat(heat_fire_state_, now_us, cooling);
+
+  const Eigen::Vector3d target_xyz = shot_candidate.hit_xyza.head<3>();
+  const double distance = std::max(0.3, AimerDetail::HorizontalDistance(target_xyz));
+  const double half_width =
+      0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * std::cos(std::abs(shot_candidate.view_angle)) -
+      AimerDetail::FIRE_BULLET_SPREAD_M;
+  const double horizon = std::max(0.0, shot_candidate.fly_time) + cfg_.heat_fire_horizon_extra_s;
+  const double phase_sigma = cfg_.heat_fire_phase_sigma_rad_s * horizon * current_target_radius_;
+  const double sigma = std::hypot(cfg_.heat_fire_sigma_m, phase_sigma);
+  const double p_hit = AimerDetail::HitProbability(half_width, distance * gimbal_error_yaw, sigma);
+
+  const double since_shot_s =
+      static_cast<double>(now_us - std::min(now_us, heat_fire_state_.last_shot_us)) * 1e-6;
+  const double threshold = AimerDetail::HeatFireThreshold(
+      cfg_.heat_fire_p_low, cfg_.heat_fire_p_high, cfg_.heat_fire_p_floor,
+      cfg_.heat_fire_relax_s, heat_fire_state_.heat / limit, since_shot_s);
+
+  const bool fire = gates_passed && heat_fire_state_.heat + cfg_.heat_fire_shot_heat <= limit &&
+                    p_hit >= threshold;
+  if (fire)
+  {
+    AimerDetail::CountShot(heat_fire_state_, now_us, cfg_.heat_fire_shot_heat,
+                           cfg_.heat_fire_min_interval_s);
+  }
+  return fire;
 }
 
 /**
@@ -367,6 +421,8 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   auto target_callback_measurement = target_callback_duration_.Measure();
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  current_image_us_ = target_msg.image_timestamp_us;
+  current_target_radius_ = target_msg.radius_1 > 0.05 ? target_msg.radius_1 : 0.2;
   AimerPreviewFrame preview_frame{};
   preview_frame.image_timestamp_us = target_msg.image_timestamp_us;
   preview_frame.have_target = true;

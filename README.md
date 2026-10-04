@@ -18,7 +18,9 @@ Aimer 订阅 `tracker` 域的 `target_frame`（ArmorTracker 发布的 `const Tra
 - 本帧命令与上一帧命令之差小于动态阈值的 2 倍。
 - 同帧 IMU 给出的云台姿态与命令的偏差小于动态阈值。动态阈值由目标距离、装甲尺寸和视角计算，限制在 `min_fire_threshold` 到 `max_fire_threshold` 之间。
 
-`host` 域的裁判 Topic（名称由 `referee_topic` 配置）提供热量上限和冷却值，用于日志。
+`heat_aware_fire` 打开且已收到裁判系统的热量上限时，以上条件满足后还要通过按热量分配的开火判定。Aimer 在本地推算枪管热量：每次计入的开火加 `heat_fire_shot_heat`，相邻两发至少相隔 `heat_fire_min_interval_s`，热量按裁判系统给出的冷却值连续下降。单发命中概率由三部分估计：命中面在命中时刻的投影半宽（装甲宽度的一半乘以视角余弦，再减去散布）、实测云台误差与目标距离之积，以及随预测时域增长的装甲相位误差。开火所需的命中概率从 `heat_fire_p_low`（热量为 0）线性升到 `heat_fire_p_high`（热量达到上限）；热量低于上限一半且超过 `heat_fire_relax_s` 未开火时，所需概率在随后的 `heat_fire_relax_s` 内降到 `heat_fire_p_floor`。出弹数受热量限制时，这一判定把出弹集中到装甲正对、云台稳定跟踪的时刻。
+
+`host` 域的裁判 Topic（名称由 `referee_topic` 配置）提供热量上限和冷却值，用于日志和按热量分配的开火判定。
 
 `enable_runtime_log` 打开时，运行期 info 日志记录弹速变化、开火状态翻转、热量上限与冷却变化，以及每 30 次 MPC 规划一次的耗时；当前热量缺失时日志写 `heat=unknown`。`OnMonitor()` 输出 target_frame 回调的累计耗时统计（次数、平均、最小、最大，单位 μs）。
 
@@ -44,7 +46,9 @@ The fire permission is bound to the future hit candidate of a single projectile:
 - The difference between this frame's command and the previous frame's command is below twice the dynamic threshold.
 - The gimbal attitude from the same-frame IMU deviates from the command by less than the dynamic threshold. The dynamic threshold is computed from the target distance, armor size and view angle, and limited to `min_fire_threshold` to `max_fire_threshold`.
 
-The referee Topic in the `host` domain (name set by `referee_topic`) provides the heat limit and cooling value used for logging.
+With `heat_aware_fire` on and the heat limit received from the referee, a shot that meets the conditions above also has to pass the heat-aware fire decision. Aimer estimates the barrel heat locally: every counted shot adds `heat_fire_shot_heat`, two counted shots are at least `heat_fire_min_interval_s` apart, and the heat falls continuously at the cooling value from the referee. The single-shot hit probability is estimated from three parts: the projected half-width of the hit face at the hit time (half the armor width times the cosine of the view angle, minus the spread), the measured gimbal error times the target distance, and the plate-phase error that grows with the prediction horizon. The hit probability required to fire rises linearly from `heat_fire_p_low` (zero heat) to `heat_fire_p_high` (heat at the limit); when the heat is below half the limit and no shot was fired for more than `heat_fire_relax_s`, the required probability falls to `heat_fire_p_floor` over the next `heat_fire_relax_s`. When the number of shots is limited by heat, this decision concentrates the shots at moments when the armor faces the shooter and the gimbal tracks steadily.
+
+The referee Topic in the `host` domain (name set by `referee_topic`) provides the heat limit and cooling value used for logging and for the heat-aware fire decision.
 
 With `enable_runtime_log` on, the runtime info log records bullet-speed changes, fire-state flips, heat-limit and cooling changes, and the duration of every 30th MPC planning; the log shows `heat=unknown` while the current heat is unavailable. `OnMonitor()` outputs the accumulated duration statistics of the target_frame callback (count, average, minimum, maximum, in μs).
 
@@ -105,6 +109,12 @@ Aimer(Config cfg = DefaultConfig(),
 | `bullet_speed_log_delta` / `heat_log_delta` | `0.05` / `1.0` | 弹速、热量日志的变化阈值。 |
 | `convert_raw_gimbal_quat_to_body` | `false` | 原始云台四元数到 body 轴的转换开关。 |
 | `referee_topic` | `"robot_game_ref"` | `host` 域裁判 Topic 名称，须非空。 |
+| `heat_aware_fire` | `false` | 是否启用按热量分配的开火（见第 1 节）。 |
+| `heat_fire_p_low` / `heat_fire_p_high` | `0.55` / `0.85` | 热量为 0 与达到上限时开火所需的命中概率。 |
+| `heat_fire_p_floor` / `heat_fire_relax_s` | `0.3` / `0.5` | 门槛放宽的下限，以及开始放宽前的不开火时间，s。 |
+| `heat_fire_sigma_m` / `heat_fire_phase_sigma_rad_s` | `0.02` / `0.7` | 命中概率模型的基础横向标准差（m）和相位误差增长率（rad/s）。 |
+| `heat_fire_horizon_extra_s` | `0.05` | 加在弹丸飞行时间上的预测时域，覆盖开火命令到出膛的延迟，s。 |
+| `heat_fire_shot_heat` / `heat_fire_min_interval_s` | `10.0` / `0.05` | 单发热量，发射机构相邻两发的最小间隔（s）。 |
 
 - `calibration`：原生相机标定，用于预览投影，构造时检查其合理性。默认 `DefaultCalibration()` 为 1280x720、`fx = fy = 800`、主点 `(640, 360)`、零畸变；启用预览时传入与相机一致的标定。
 
@@ -141,6 +151,12 @@ The Module receives its inputs through Topics; all constructor parameters are co
 | `bullet_speed_log_delta` / `heat_log_delta` | `0.05` / `1.0` | Change thresholds of the bullet-speed and heat logs. |
 | `convert_raw_gimbal_quat_to_body` | `false` | Switch for converting the raw gimbal quaternion to the body axes. |
 | `referee_topic` | `"robot_game_ref"` | Name of the referee Topic in the `host` domain; non-empty. |
+| `heat_aware_fire` | `false` | Enables the heat-aware fire decision (see Section 1). |
+| `heat_fire_p_low` / `heat_fire_p_high` | `0.55` / `0.85` | Hit probability required to fire at zero heat and at the heat limit. |
+| `heat_fire_p_floor` / `heat_fire_relax_s` | `0.3` / `0.5` | Lower bound of the relaxed threshold, and the time without a shot before the relaxation starts, in s. |
+| `heat_fire_sigma_m` / `heat_fire_phase_sigma_rad_s` | `0.02` / `0.7` | Base lateral standard deviation (m) and phase-error growth rate (rad/s) of the hit-probability model. |
+| `heat_fire_horizon_extra_s` | `0.05` | Horizon added to the projectile flight time, covering the delay from the fire command to the muzzle, in s. |
+| `heat_fire_shot_heat` / `heat_fire_min_interval_s` | `10.0` / `0.05` | Heat per shot, and the minimum interval between two shots of the launcher (s). |
 
 - `calibration`: native camera calibration used for the preview projection, checked for plausibility at construction. The default `DefaultCalibration()` is 1280x720 with `fx = fy = 800`, principal point `(640, 360)` and zero distortion; with the preview enabled, a calibration matching the camera is passed.
 
@@ -149,14 +165,14 @@ The Module receives its inputs through Topics; all constructor parameters are co
 | Topic | 方向 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | `tracker/target_frame` | 订阅 | `const TrackedFrame<FrameLayoutV>*` | ArmorTracker 发布的目标帧，含同源图像与同帧 IMU |
-| `host/<referee_topic>`（默认 `robot_game_ref`） | 订阅 | `RefereeTypes::RobotGameRefereePack` | 裁判数据，热量上限与冷却值用于日志 |
+| `host/<referee_topic>`（默认 `robot_game_ref`） | 订阅 | `RefereeTypes::RobotGameRefereePack` | 裁判数据，热量上限与冷却值用于日志和按热量分配的开火 |
 | `host/target_euler` | 发布 | `AimerHostGimbalTarget` | 云台目标：角度、角速度、角加速度前馈，单位 rad、rad/s、rad/s^2；机械俯仰轴使用 `rol*` 字段，`pit*` 字段取相同的值 |
 | `host/fire_notify` | 发布 | `AimerHostFireNotify` | 发射许可，值与最终云台计划的开火门控一致 |
 
 | Topic | Direction | Type | Meaning |
 | --- | --- | --- | --- |
 | `tracker/target_frame` | Subscribe | `const TrackedFrame<FrameLayoutV>*` | Target frame published by ArmorTracker, with the source image and the same-frame IMU |
-| `host/<referee_topic>` (default `robot_game_ref`) | Subscribe | `RefereeTypes::RobotGameRefereePack` | Referee data; the heat limit and cooling value are used for logging |
+| `host/<referee_topic>` (default `robot_game_ref`) | Subscribe | `RefereeTypes::RobotGameRefereePack` | Referee data; the heat limit and cooling value are used for logging and the heat-aware firing |
 | `host/target_euler` | Publish | `AimerHostGimbalTarget` | Gimbal target: angle, angular-velocity and angular-acceleration feedforward, in rad, rad/s, rad/s^2; the mechanical pitch axis uses the `rol*` fields and the `pit*` fields hold the same values |
 | `host/fire_notify` | Publish | `AimerHostFireNotify` | Fire permission, equal to the fire gating of the final gimbal plan |
 

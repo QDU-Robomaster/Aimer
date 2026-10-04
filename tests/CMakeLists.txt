@@ -18,3 +18,8 @@ add_test(NAME aimer_referee_default_topic_test COMMAND aimer_referee_topic_test
                                                        robot_game_ref
 )
 add_test(NAME aimer_referee_sentry_topic_test COMMAND aimer_referee_topic_test sentry_ref)
+
+add_executable(aimer_heat_fire_test heat_fire_test.cpp)
+target_include_directories(aimer_heat_fire_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/..)
+target_compile_features(aimer_heat_fire_test PRIVATE cxx_std_20)
+add_test(NAME aimer_heat_fire_test COMMAND aimer_heat_fire_test)

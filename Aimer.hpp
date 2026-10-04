@@ -33,6 +33,7 @@ depends:
 #include "ArmorTrackerTarget.hpp"
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
+#include "AimerHeatFire.hpp"
 #include "GimbalPlan.hpp"
 #include "RefereeTypes.hpp"
 #include "VisionPreview.hpp"
@@ -290,6 +291,43 @@ struct AimerConfig
   /// Name of the referee Topic in the host domain, non-empty; copied and subscribed at
   /// construction
   std::string_view referee_topic{"robot_game_ref"};
+  /// 是否按热量分配开火：估计每次开火的命中概率，只在概率高于随热量升高的门槛时开火；
+  /// 需要裁判系统给出热量上限和冷却值，未收到时不生效
+  /// Whether heat-aware firing is enabled: the hit probability of each fire opportunity
+  /// is estimated and the shot is fired only above a threshold that rises with heat;
+  /// requires the heat limit and cooling value from the referee and is inactive without
+  /// them
+  bool heat_aware_fire{false};
+  /// 热量为 0 时开火所需的命中概率
+  /// Hit probability required to fire at zero heat
+  double heat_fire_p_low{0.55};
+  /// 热量达到上限时开火所需的命中概率
+  /// Hit probability required to fire at the heat limit
+  double heat_fire_p_high{0.85};
+  /// 热量低于上限一半且长时间未开火时，门槛放宽到的下限
+  /// Lower bound the threshold is relaxed to when the heat is below half the limit and
+  /// no shot was fired for a while
+  double heat_fire_p_floor{0.3};
+  /// 开始放宽门槛前允许的不开火时间，单位 s
+  /// Time without a shot before the threshold starts to relax, in s
+  double heat_fire_relax_s{0.5};
+  /// 命中概率模型的基础横向标准差，单位 m
+  /// Base lateral standard deviation of the hit-probability model, in m
+  double heat_fire_sigma_m{0.02};
+  /// 装甲板相位预测标准差随预测时域的增长率，单位 rad/s
+  /// Growth rate of the plate-phase prediction standard deviation with the horizon, in
+  /// rad/s
+  double heat_fire_phase_sigma_rad_s{0.7};
+  /// 加在弹丸飞行时间上的预测时域，覆盖开火指令到出膛的延迟，单位 s
+  /// Horizon added to the flight time, covering the delay from the fire command to the
+  /// muzzle, in s
+  double heat_fire_horizon_extra_s{0.05};
+  /// 单发热量，17 mm 弹丸为 10
+  /// Heat per shot, 10 for 17 mm projectiles
+  double heat_fire_shot_heat{10.0};
+  /// 发射机构相邻两发的最小间隔，单位 s
+  /// Minimum interval between two shots of the launcher, in s
+  double heat_fire_min_interval_s{0.05};
 };
 
 /**
@@ -453,6 +491,22 @@ class AimerCore
   bool ShouldAutoFire(const AimerShotCandidate& shot_candidate, bool plan_fire_enabled,
                       double yaw, double roll);
   /**
+   * @brief 在已有开火门控之后应用按热量分配的开火判定，并维护本地热量估计。
+   *        Apply the heat-aware fire decision after the existing fire gates and keep the
+   *        local heat estimate.
+   *
+   * @param shot_candidate 当前发射对应的未来命中候选。
+   *                       Future hit candidate of the current shot.
+   * @param gimbal_error_yaw 实测云台 yaw 相对命令的误差，单位 rad。
+   *                         Measured gimbal yaw error relative to the command, in rad.
+   * @param gates_passed 已有开火门控是否全部通过。
+   *                     Whether all existing fire gates pass.
+   * @return 最终是否开火。
+   *         Whether the shot is finally fired.
+   */
+  bool HeatAwareFire(const AimerShotCandidate& shot_candidate, double gimbal_error_yaw,
+                     bool gates_passed);
+  /**
    * @brief 初始化 yaw 和 roll 轴 TinyMPC 求解器。
    *        Initialize the yaw and roll-axis TinyMPC solvers.
    */
@@ -548,6 +602,21 @@ class AimerCore
   double last_logged_heat_{0.0};
   double last_logged_heat_limit_{0.0};
   double last_logged_cooling_{0.0};
+  /// 裁判系统给出的热量上限，未收到时为 0
+  /// Heat limit from the referee, 0 until received
+  std::atomic<double> referee_heat_limit_{0.0};
+  /// 裁判系统给出的每秒冷却值
+  /// Cooling per second from the referee
+  std::atomic<double> referee_cooling_{0.0};
+  /// 按热量分配开火使用的本地热量估计
+  /// Local heat estimate of the heat-aware firing
+  AimerDetail::HeatFireState heat_fire_state_{};
+  /// 当前处理帧的图像时间戳，单位 us
+  /// Image timestamp of the frame being processed, in us
+  uint64_t current_image_us_{0};
+  /// 当前目标的装甲半径，单位 m
+  /// Armor radius of the current target, in m
+  double current_target_radius_{0.2};
   TinySolver* yaw_solver_{nullptr};
   TinySolver* roll_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
