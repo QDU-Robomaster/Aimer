@@ -26,6 +26,7 @@ depends:
 #include <Eigen/Dense>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -34,6 +35,7 @@ depends:
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
 #include "AimerHeatFire.hpp"
+#include "AimerLeadCalibration.hpp"
 #include "GimbalPlan.hpp"
 #include "RefereeTypes.hpp"
 #include "VisionPreview.hpp"
@@ -313,7 +315,7 @@ struct AimerConfig
   double heat_fire_relax_s{0.5};
   /// 命中概率模型的基础横向标准差，单位 m
   /// Base lateral standard deviation of the hit-probability model, in m
-  double heat_fire_sigma_m{0.02};
+  double heat_fire_sigma_m{0.01};
   /// 装甲板相位预测标准差随预测时域的增长率，单位 rad/s
   /// Growth rate of the plate-phase prediction standard deviation with the horizon, in
   /// rad/s
@@ -328,6 +330,32 @@ struct AimerConfig
   /// 发射机构相邻两发的最小间隔，单位 s
   /// Minimum interval between two shots of the launcher, in s
   double heat_fire_min_interval_s{0.05};
+  /// 出膛时仍保留的请求时刻云台误差比例；1 表示按请求时刻误差估计
+  /// Share of the request-time gimbal error that remains at the muzzle exit; 1 uses the
+  /// request-time error as it is
+  double heat_fire_gimbal_error_gain{0.65};
+  /// 横向偏差中与指令 yaw 角速度成正比的时间，单位 s
+  /// Time multiplied by the command yaw rate in the lateral offset, in s
+  double heat_fire_rate_bias_s{0.01};
+  /// 横向标准差中与指令 yaw 角速度成正比的时间，单位 s
+  /// Time multiplied by the command yaw rate in the lateral standard deviation, in s
+  double heat_fire_rate_spread_s{0.01};
+  /// 是否在线标定指向超前量：用之后的帧检查云台指向，修正预测延迟，收敛后固定
+  /// Whether the pointing lead is calibrated online: the gimbal pointing is checked
+  /// against later frames, the prediction delay is corrected and frozen once calibrated
+  bool lead_calibration{false};
+  /// 固定前的修正批数
+  /// Number of correcting batches before the correction is frozen
+  int lead_calibration_batches{5};
+  /// 修正量绝对值上限，单位 s
+  /// Limit of the absolute correction, in s
+  double lead_calibration_max_adjust_s{0.05};
+  /// 固定后触发重新标定的超前时间，单位 s
+  /// Lead time that triggers a recalibration once frozen, in s
+  double lead_calibration_monitor_threshold_s{0.003};
+  /// 触发重新标定所需的同向连续批数
+  /// Consecutive same-sign batches that trigger a recalibration
+  int lead_calibration_monitor_batches{3};
 };
 
 /**
@@ -497,15 +525,33 @@ class AimerCore
    *
    * @param shot_candidate 当前发射对应的未来命中候选。
    *                       Future hit candidate of the current shot.
-   * @param gimbal_error_yaw 实测云台 yaw 相对命令的误差，单位 rad。
-   *                         Measured gimbal yaw error relative to the command, in rad.
+   * @param gimbal_error_yaw 实测云台 yaw 减命令 yaw，单位 rad。
+   *                         Measured gimbal yaw minus the command yaw, in rad.
+   * @param command_yaw_rate 命令 yaw 角速度，单位 rad/s。
+   *                         Command yaw rate, in rad/s.
    * @param gates_passed 已有开火门控是否全部通过。
    *                     Whether all existing fire gates pass.
    * @return 最终是否开火。
    *         Whether the shot is finally fired.
    */
   bool HeatAwareFire(const AimerShotCandidate& shot_candidate, double gimbal_error_yaw,
-                     bool gates_passed);
+                     double command_yaw_rate, bool gates_passed);
+  /**
+   * @brief 在线标定指向超前量：记录本帧云台指向，用本帧观测检查此前各帧的指向，按批
+   *        修正预测延迟。
+   *        Online calibration of the pointing lead: record the gimbal pointing of this
+   *        frame, check the pointing of earlier frames against this observation and
+   *        correct the prediction delay in batches.
+   *
+   * @param target_msg 当前 tracker 目标。
+   *                   Current tracker target.
+   * @param command_in_force 上一帧是否发出了云台指令。
+   *                         Whether a gimbal command was issued for the previous frame.
+   * @param command_yaw_rate 当前生效指令的 yaw 角速度，单位 rad/s。
+   *                         Yaw rate of the command in force, in rad/s.
+   */
+  void UpdateLeadCalibration(const ArmorTrackerTarget& target_msg, bool command_in_force,
+                             double command_yaw_rate);
   /**
    * @brief 初始化 yaw 和 roll 轴 TinyMPC 求解器。
    *        Initialize the yaw and roll-axis TinyMPC solvers.
@@ -620,6 +666,20 @@ class AimerCore
   /// 上一帧是否在跟踪目标，用于判断开始跟踪的时刻
   /// Whether a target was tracked in the previous frame, to detect the start of tracking
   bool heat_fire_tracking_{false};
+  /// 等待到达时刻观测的指向样本
+  /// Pointing sample waiting for the observation at its arrival time
+  struct LeadSample
+  {
+    uint64_t arrival_us;
+    double gimbal_yaw;
+    double command_yaw_rate;
+  };
+  /// 指向超前量的在线标定
+  /// Online calibration of the pointing lead
+  AimerDetail::LeadCalibrator lead_calibrator_;
+  /// 等待到达时刻观测的指向样本，按到达时刻排序
+  /// Pointing samples waiting for the observation at their arrival time, in arrival order
+  std::deque<LeadSample> lead_pending_{};
   TinySolver* yaw_solver_{nullptr};
   TinySolver* roll_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};

@@ -6,7 +6,7 @@
 
 Aimer 订阅 `tracker` 域的 `target_frame`（ArmorTracker 发布的 `const TrackedFrame*`，包含 `SharedFrame` 图像所有权，以及按值携带的同帧 IMU、`ArmorTrackerTarget` 和投影变换）。每收到一帧，Aimer 选择要打的装甲板，预测目标运动，解算机械俯仰轴 roll 与 yaw，并向 `host` 域发布云台目标 `target_euler` 和发射许可 `fire_notify`。同帧 IMU 四元数同时作为当前云台姿态，用于自动开火的对齐判定。目标丢失或弹道不可解时，输出全零云台目标，发射许可为 `false`。
 
-预测延迟为 `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s + gimbal_response_delay_s`，再按 `|v_yaw|` 是否超过 `yaw_rate_threshold` 加上 `high_speed_extra_predict_s` 或 `low_speed_extra_predict_s`。Aimer 预测到延迟后的目标，选择瞄点，再按弹丸飞行时间二次预测并重新选择瞄点。
+预测延迟为 `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s + gimbal_response_delay_s`，再按 `|v_yaw|` 是否超过 `yaw_rate_threshold` 加上 `high_speed_extra_predict_s` 或 `low_speed_extra_predict_s`；`lead_calibration` 打开时再加上在线标定的修正量（见下文）。Aimer 预测到延迟后的目标，选择瞄点，再按弹丸飞行时间二次预测并重新选择瞄点。
 
 弹道使用二次空气阻力模型（`a = -k·|v|·v`）：给定发射仰角后用 RK4 积分弹丸运动，再在 `[ballistic_min_elevation_deg, ballistic_max_elevation_deg]` 内用二分括区求根求仰角；不可解时输出空命令。TinyMPC 参考轨迹的逐采样命令使用无阻力解析弹道近似。
 
@@ -18,11 +18,13 @@ Aimer 订阅 `tracker` 域的 `target_frame`（ArmorTracker 发布的 `const Tra
 - 本帧命令与上一帧命令之差小于动态阈值的 2 倍。
 - 同帧 IMU 给出的云台姿态与命令的偏差小于动态阈值。动态阈值由目标距离、装甲尺寸和视角计算，限制在 `min_fire_threshold` 到 `max_fire_threshold` 之间。
 
-`heat_aware_fire` 打开且已收到裁判系统的热量上限时，以上条件满足后还要通过按热量分配的开火判定。Aimer 在本地推算枪管热量：每次计入的开火加 `heat_fire_shot_heat`，相邻两发至少相隔 `heat_fire_min_interval_s`，热量按裁判系统给出的冷却值连续下降。单发命中概率由三部分估计：命中面在命中时刻的投影半宽（装甲宽度的一半乘以视角余弦，再减去散布）、实测云台误差与目标距离之积，以及随预测时域增长的装甲相位误差。开火所需的命中概率从 `heat_fire_p_low`（热量为 0）线性升到 `heat_fire_p_high`（热量达到上限）；热量低于上限一半，且距上一发和开始跟踪当前目标都超过 `heat_fire_relax_s` 时，所需概率在随后的 `heat_fire_relax_s` 内降到 `heat_fire_p_floor`。出弹数受热量限制时，这一判定把出弹集中到装甲正对、云台稳定跟踪的时刻。
+`heat_aware_fire` 打开且已收到裁判系统的热量上限时，以上条件满足后还要通过按热量分配的开火判定。Aimer 在本地推算枪管热量：每次计入的开火加 `heat_fire_shot_heat`，相邻两发至少相隔 `heat_fire_min_interval_s`，热量按裁判系统给出的冷却值连续下降。单发命中概率按出膛时刻估计。可命中的半宽为命中面在命中时刻的投影半宽（装甲宽度的一半乘以视角余弦，再减去散布）。横向偏差为目标距离乘以 `|heat_fire_gimbal_error_gain · e + heat_fire_rate_bias_s · ω|`，其中 `e` 为请求时刻实测云台 yaw 减命令 yaw，`ω` 为命令 yaw 角速度：请求时刻的云台误差到出膛时留下一部分，命令转得越快，出膛时的偏差越大。横向标准差由 `heat_fire_sigma_m`、随预测时域增长的装甲相位误差和目标距离乘以 `heat_fire_rate_spread_s · ω` 三项合成。`heat_fire_gimbal_error_gain` 取 1、两个角速度项取 0、`heat_fire_sigma_m` 取 0.02 时，即按请求时刻云台误差估计。开火所需的命中概率从 `heat_fire_p_low`（热量为 0）线性升到 `heat_fire_p_high`（热量达到上限）；热量低于上限一半，且距上一发和开始跟踪当前目标都超过 `heat_fire_relax_s` 时，所需概率在随后的 `heat_fire_relax_s` 内降到 `heat_fire_p_floor`。出弹数受热量限制时，这一判定把出弹集中到命令转得慢、云台到出膛时仍对准的时刻。默认系数按 Webots 目标车世界的射击记录拟合（指向超前量已标定），实车按实车射击记录重新拟合。
+
+`lead_calibration` 打开时，Aimer 在线标定指向超前量。每帧记下与图像同步的 IMU 给出的云台 yaw 和当前生效命令的 yaw 角速度。子弹若在该帧图像时刻出膛，一个飞行时间后到达；到达时刻之后的第一帧直接观测到装甲板，把该帧目标状态回推几毫秒即得到达时刻的装甲板方位。云台 yaw 与该方位之差对命令 yaw 角速度回归，斜率就是指向超前的时间，为正表示云台沿目标运动方向超前。前两批每批 250 帧、之后每批 400 帧，每批按回归结果修正预测延迟，修正量绝对值不超过 `lead_calibration_max_adjust_s`；命令角速度变化太小的批次不用。`lead_calibration_batches` 批后，修正量固定为最后三批的平均，日志给出该值，可加到 `gimbal_response_delay_s` 上长期使用。固定后继续监视，连续 `lead_calibration_monitor_batches` 批超前时间同号且绝对值超过 `lead_calibration_monitor_threshold_s` 时重新标定。标定在跟踪目标期间逐帧进行，使用每帧已有的数据。标定的对象是指向的时间误差；弹速误差、相机与 IMU 之间的时间偏移同时作用于命令和观测，需另行标定。
 
 `host` 域的裁判 Topic（名称由 `referee_topic` 配置）提供热量上限和冷却值，用于日志和按热量分配的开火判定。
 
-`enable_runtime_log` 打开时，运行期 info 日志记录弹速变化、开火状态翻转、热量上限与冷却变化，以及每 30 次 MPC 规划一次的耗时；当前热量缺失时日志写 `heat=unknown`。`OnMonitor()` 输出 target_frame 回调的累计耗时统计（次数、平均、最小、最大，单位 μs）。
+`enable_runtime_log` 打开时，运行期 info 日志记录弹速变化、开火状态翻转、热量上限与冷却变化，以及每 30 次 MPC 规划一次的耗时；当前热量缺失时日志写 `heat=unknown`。`lead_calibration` 打开时还记录每批的超前时间、修正量和固定后的修正量。`OnMonitor()` 输出 target_frame 回调的累计耗时统计（次数、平均、最小、最大，单位 μs）。
 
 `cfg.preview.enabled` 为 `true` 时，Aimer 内置预览，使用 `target_frame` 中的源图像和同帧 IMU 绘制：
 
@@ -34,7 +36,7 @@ Aimer 订阅 `tracker` 域的 `target_frame`（ArmorTracker 发布的 `const Tra
 
 Aimer subscribes to `target_frame` in the `tracker` domain (a `const TrackedFrame*` published by ArmorTracker, holding the `SharedFrame` image ownership and carrying the same-frame IMU, the `ArmorTrackerTarget` and the projection transform by value). For each frame, Aimer selects the armor plate to aim at, predicts the target motion, solves the mechanical pitch-axis roll and the yaw, and publishes the gimbal target `target_euler` and the fire permission `fire_notify` in the `host` domain. The same-frame IMU quaternion also serves as the current gimbal attitude for the alignment check of the automatic fire. When the target is lost or the ballistic solution does not exist, the gimbal target is all zero and the fire permission is `false`.
 
-The prediction delay is `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s + gimbal_response_delay_s`, plus `high_speed_extra_predict_s` or `low_speed_extra_predict_s` depending on whether `|v_yaw|` exceeds `yaw_rate_threshold`. Aimer predicts the target to the delayed time, selects the aim point, predicts again by the projectile flight time and selects the aim point again.
+The prediction delay is `image_to_now_s + vision_to_command_delay_s + command_transport_delay_s + gimbal_response_delay_s`, plus `high_speed_extra_predict_s` or `low_speed_extra_predict_s` depending on whether `|v_yaw|` exceeds `yaw_rate_threshold`; with `lead_calibration` on, the correction of the online calibration is added as well (see below). Aimer predicts the target to the delayed time, selects the aim point, predicts again by the projectile flight time and selects the aim point again.
 
 The ballistics use a quadratic air-drag model (`a = -k·|v|·v`): for a given launch elevation the projectile motion is integrated with RK4, and the elevation is found by bracketed bisection within `[ballistic_min_elevation_deg, ballistic_max_elevation_deg]`; an empty command is output when no solution exists. The per-sample commands of the TinyMPC reference trajectory use a drag-free analytic ballistic approximation.
 
@@ -46,11 +48,13 @@ The fire permission is bound to the future hit candidate of a single projectile:
 - The difference between this frame's command and the previous frame's command is below twice the dynamic threshold.
 - The gimbal attitude from the same-frame IMU deviates from the command by less than the dynamic threshold. The dynamic threshold is computed from the target distance, armor size and view angle, and limited to `min_fire_threshold` to `max_fire_threshold`.
 
-With `heat_aware_fire` on and the heat limit received from the referee, a shot that meets the conditions above also has to pass the heat-aware fire decision. Aimer estimates the barrel heat locally: every counted shot adds `heat_fire_shot_heat`, two counted shots are at least `heat_fire_min_interval_s` apart, and the heat falls continuously at the cooling value from the referee. The single-shot hit probability is estimated from three parts: the projected half-width of the hit face at the hit time (half the armor width times the cosine of the view angle, minus the spread), the measured gimbal error times the target distance, and the plate-phase error that grows with the prediction horizon. The hit probability required to fire rises linearly from `heat_fire_p_low` (zero heat) to `heat_fire_p_high` (heat at the limit); when the heat is below half the limit and both the last shot and the start of tracking the current target are more than `heat_fire_relax_s` ago, the required probability falls to `heat_fire_p_floor` over the next `heat_fire_relax_s`. When the number of shots is limited by heat, this decision concentrates the shots at moments when the armor faces the shooter and the gimbal tracks steadily.
+With `heat_aware_fire` on and the heat limit received from the referee, a shot that meets the conditions above also has to pass the heat-aware fire decision. Aimer estimates the barrel heat locally: every counted shot adds `heat_fire_shot_heat`, two counted shots are at least `heat_fire_min_interval_s` apart, and the heat falls continuously at the cooling value from the referee. The single-shot hit probability is estimated for the muzzle exit. The hittable half-width is the projected half-width of the hit face at the hit time (half the armor width times the cosine of the view angle, minus the spread). The lateral offset is the target distance times `|heat_fire_gimbal_error_gain · e + heat_fire_rate_bias_s · ω|`, where `e` is the measured gimbal yaw minus the command yaw at the request and `ω` is the command yaw rate: part of the request-time gimbal error remains at the exit, and the faster the command turns, the larger the offset at the exit. The lateral standard deviation combines `heat_fire_sigma_m`, the plate-phase error that grows with the prediction horizon, and the target distance times `heat_fire_rate_spread_s · ω`. With `heat_fire_gimbal_error_gain` at 1, both rate terms at 0 and `heat_fire_sigma_m` at 0.02, the estimate uses the request-time gimbal error. The hit probability required to fire rises linearly from `heat_fire_p_low` (zero heat) to `heat_fire_p_high` (heat at the limit); when the heat is below half the limit and both the last shot and the start of tracking the current target are more than `heat_fire_relax_s` ago, the required probability falls to `heat_fire_p_floor` over the next `heat_fire_relax_s`. When the number of shots is limited by heat, this decision concentrates the shots at moments when the command turns slowly and the gimbal is still on target at the exit. The default coefficients are fitted to shot records of the Webots target-vehicle world (with the pointing lead calibrated); on a robot they are refitted to the robot's shot records.
+
+With `lead_calibration` on, Aimer calibrates the pointing lead online. For every frame it keeps the gimbal yaw from the IMU synced to the image and the yaw rate of the command in force. A projectile leaving at that image time arrives one flight time later; the first frame imaged after the arrival observes the plate directly, and propagating that frame's target state back by a few milliseconds gives the plate bearing at the arrival. The difference between the gimbal yaw and that bearing is regressed on the command yaw rate; the slope is the pointing lead time, positive when the gimbal is ahead along the target motion. The first two batches have 250 frames and later batches 400 frames; each batch corrects the prediction delay by its regression result, with the absolute correction limited to `lead_calibration_max_adjust_s`; batches with too little change in the command rate are not used. After `lead_calibration_batches` batches the correction is frozen at the mean of the last three, and the log reports the value, which can be added to `gimbal_response_delay_s` for permanent use. Once frozen, the lead is still monitored, and a recalibration starts when `lead_calibration_monitor_batches` consecutive batches have a lead of the same sign above `lead_calibration_monitor_threshold_s` in magnitude. The calibration runs on every frame while a target is tracked, using data available in each frame. It covers the timing of the pointing; a bullet-speed error or a time offset between camera and IMU acts on the command and the observation alike and is calibrated separately.
 
 The referee Topic in the `host` domain (name set by `referee_topic`) provides the heat limit and cooling value used for logging and for the heat-aware fire decision.
 
-With `enable_runtime_log` on, the runtime info log records bullet-speed changes, fire-state flips, heat-limit and cooling changes, and the duration of every 30th MPC planning; the log shows `heat=unknown` while the current heat is unavailable. `OnMonitor()` outputs the accumulated duration statistics of the target_frame callback (count, average, minimum, maximum, in μs).
+With `enable_runtime_log` on, the runtime info log records bullet-speed changes, fire-state flips, heat-limit and cooling changes, and the duration of every 30th MPC planning; the log shows `heat=unknown` while the current heat is unavailable. With `lead_calibration` on, it also records the lead and correction of every batch and the frozen correction. `OnMonitor()` outputs the accumulated duration statistics of the target_frame callback (count, average, minimum, maximum, in μs).
 
 With `cfg.preview.enabled` set to `true`, Aimer provides a built-in preview drawn from the source image in `target_frame` and the same-frame IMU:
 
@@ -112,9 +116,15 @@ Aimer(Config cfg = DefaultConfig(),
 | `heat_aware_fire` | `false` | 是否启用按热量分配的开火（见第 1 节）。 |
 | `heat_fire_p_low` / `heat_fire_p_high` | `0.55` / `0.85` | 热量为 0 与达到上限时开火所需的命中概率。 |
 | `heat_fire_p_floor` / `heat_fire_relax_s` | `0.3` / `0.5` | 门槛放宽的下限，以及开始放宽前的不开火时间，s。 |
-| `heat_fire_sigma_m` / `heat_fire_phase_sigma_rad_s` | `0.02` / `0.7` | 命中概率模型的基础横向标准差（m）和相位误差增长率（rad/s）。 |
+| `heat_fire_sigma_m` / `heat_fire_phase_sigma_rad_s` | `0.01` / `0.7` | 命中概率模型的基础横向标准差（m）和相位误差增长率（rad/s）。 |
 | `heat_fire_horizon_extra_s` | `0.05` | 加在弹丸飞行时间上的预测时域，覆盖开火命令到出膛的延迟，s。 |
 | `heat_fire_shot_heat` / `heat_fire_min_interval_s` | `10.0` / `0.05` | 单发热量，发射机构相邻两发的最小间隔（s）。 |
+| `heat_fire_gimbal_error_gain` | `0.65` | 出膛时保留的请求时刻云台误差比例。 |
+| `heat_fire_rate_bias_s` / `heat_fire_rate_spread_s` | `0.01` / `0.01` | 横向偏差与横向标准差中乘以命令 yaw 角速度的时间，s。 |
+| `lead_calibration` | `false` | 是否在线标定指向超前量（见第 1 节）。 |
+| `lead_calibration_batches` | `5` | 修正量固定前的修正批数。 |
+| `lead_calibration_max_adjust_s` | `0.05` | 修正量绝对值上限，s。 |
+| `lead_calibration_monitor_threshold_s` / `lead_calibration_monitor_batches` | `0.003` / `3` | 固定后触发重新标定的超前时间（s）与同号连续批数。 |
 
 - `calibration`：原生相机标定，用于预览投影，构造时检查其合理性。默认 `DefaultCalibration()` 为 1280x720、`fx = fy = 800`、主点 `(640, 360)`、零畸变；启用预览时传入与相机一致的标定。
 
@@ -154,9 +164,15 @@ The Module receives its inputs through Topics; all constructor parameters are co
 | `heat_aware_fire` | `false` | Enables the heat-aware fire decision (see Section 1). |
 | `heat_fire_p_low` / `heat_fire_p_high` | `0.55` / `0.85` | Hit probability required to fire at zero heat and at the heat limit. |
 | `heat_fire_p_floor` / `heat_fire_relax_s` | `0.3` / `0.5` | Lower bound of the relaxed threshold, and the time without a shot before the relaxation starts, in s. |
-| `heat_fire_sigma_m` / `heat_fire_phase_sigma_rad_s` | `0.02` / `0.7` | Base lateral standard deviation (m) and phase-error growth rate (rad/s) of the hit-probability model. |
+| `heat_fire_sigma_m` / `heat_fire_phase_sigma_rad_s` | `0.01` / `0.7` | Base lateral standard deviation (m) and phase-error growth rate (rad/s) of the hit-probability model. |
 | `heat_fire_horizon_extra_s` | `0.05` | Horizon added to the projectile flight time, covering the delay from the fire command to the muzzle, in s. |
 | `heat_fire_shot_heat` / `heat_fire_min_interval_s` | `10.0` / `0.05` | Heat per shot, and the minimum interval between two shots of the launcher (s). |
+| `heat_fire_gimbal_error_gain` | `0.65` | Share of the request-time gimbal error that remains at the muzzle exit. |
+| `heat_fire_rate_bias_s` / `heat_fire_rate_spread_s` | `0.01` / `0.01` | Times multiplied by the command yaw rate in the lateral offset and the lateral standard deviation, in s. |
+| `lead_calibration` | `false` | Enables the online calibration of the pointing lead (see Section 1). |
+| `lead_calibration_batches` | `5` | Number of correcting batches before the correction is frozen. |
+| `lead_calibration_max_adjust_s` | `0.05` | Limit of the absolute correction, in s. |
+| `lead_calibration_monitor_threshold_s` / `lead_calibration_monitor_batches` | `0.003` / `3` | Lead time (s) and number of consecutive same-sign batches that trigger a recalibration once frozen. |
 
 - `calibration`: native camera calibration used for the preview projection, checked for plausibility at construction. The default `DefaultCalibration()` is 1280x720 with `fx = fy = 800`, principal point `(640, 360)` and zero distortion; with the preview enabled, a calibration matching the camera is passed.
 

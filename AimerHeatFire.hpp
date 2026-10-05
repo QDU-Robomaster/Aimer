@@ -124,6 +124,41 @@ inline double HitProbability(double half_width_m, double bias_m, double sigma_m)
 }
 
 /**
+ * @brief 出膛时刻横向偏差的均值：请求时刻云台误差留到出膛的部分，加上随指令角速度
+ *        增长的偏差。
+ *        Mean lateral offset at muzzle exit: the part of the request-time gimbal error
+ *        that remains at the exit, plus an offset that grows with the command yaw rate.
+ * @param distance_m 目标水平距离，单位 m / Horizontal target distance, in m.
+ * @param gimbal_error_rad 请求时刻云台 yaw 减指令 yaw，单位 rad / Gimbal yaw minus
+ *        command yaw at the request, in rad.
+ * @param error_gain 出膛时保留的云台误差比例 / Share of the gimbal error remaining at
+ *        the exit.
+ * @param command_yaw_rate 指令 yaw 角速度，单位 rad/s / Command yaw rate, in rad/s.
+ * @param rate_bias_s 指令角速度对应的偏差时间，单位 s / Offset time per command yaw
+ *        rate, in s.
+ * @return 横向偏差绝对值，单位 m / Absolute lateral offset, in m.
+ */
+inline double ExitLateralBias(double distance_m, double gimbal_error_rad, double error_gain,
+                              double command_yaw_rate, double rate_bias_s)
+{
+  return distance_m * std::abs(error_gain * gimbal_error_rad + rate_bias_s * command_yaw_rate);
+}
+
+/**
+ * @brief 出膛时刻横向偏差的标准差：基础项、装甲相位项和随指令角速度增长的项。
+ *        Standard deviation of the lateral offset at muzzle exit: a base term, the plate
+ *        phase term and a term that grows with the command yaw rate.
+ * @return 标准差，单位 m / Standard deviation, in m.
+ */
+inline double ExitLateralSigma(double base_sigma_m, double phase_sigma_m, double distance_m,
+                               double command_yaw_rate, double rate_spread_s)
+{
+  const double rate_sigma = distance_m * rate_spread_s * command_yaw_rate;
+  return std::sqrt(base_sigma_m * base_sigma_m + phase_sigma_m * phase_sigma_m +
+                   rate_sigma * rate_sigma);
+}
+
+/**
  * @brief 开火所需的命中概率。
  *        Hit probability required to fire.
  *

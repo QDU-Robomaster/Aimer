@@ -49,6 +49,21 @@ int main()
               1e-12),
          "centred probability is 2 Phi(w / sigma) - 1");
 
+  // Exit-time offset and spread: the gimbal error is scaled, the command rate adds an
+  // offset and a spread; gain 1 and zero rate terms give the request-time model.
+  Expect(Near(ExitLateralBias(3.0, 0.01, 1.0, 0.5, 0.0), 0.03), "gain 1, no rate term: d |e|");
+  Expect(Near(ExitLateralBias(3.0, 0.01, 0.65, 0.0, 0.01), 0.0195), "gain scales the error");
+  Expect(Near(ExitLateralBias(3.0, -0.01, 0.5, 0.5, 0.01), 0.0), "rate offset can cancel the error");
+  Expect(Near(ExitLateralBias(3.0, 0.0, 0.65, -0.5, 0.01), 0.015), "rate offset alone");
+  Expect(Near(ExitLateralSigma(0.01, 0.0, 3.0, 0.0, 0.01), 0.01), "no rate: base sigma");
+  Expect(Near(ExitLateralSigma(0.03, 0.04, 3.0, 0.0, 0.01), 0.05), "base and phase add in quadrature");
+  Expect(Near(ExitLateralSigma(0.0, 0.0, 3.0, 1.0, 0.01), 0.03), "rate spread d w t");
+  Expect(HitProbability(0.05, ExitLateralBias(3.0, 0.0, 0.65, 1.0, 0.01),
+                        ExitLateralSigma(0.01, 0.02, 3.0, 1.0, 0.01)) <
+             HitProbability(0.05, ExitLateralBias(3.0, 0.0, 0.65, 0.2, 0.01),
+                            ExitLateralSigma(0.01, 0.02, 3.0, 0.2, 0.01)),
+         "a faster command lowers P(hit)");
+
   // Threshold: rises with heat; relaxes towards the floor only at low heat after a pause.
   Expect(Near(HeatFireThreshold(0.55, 0.85, 0.3, 0.5, 0.0, 0.0), 0.55), "zero heat gives p_low");
   Expect(Near(HeatFireThreshold(0.55, 0.85, 0.3, 0.5, 1.0, 0.0), 0.85), "full heat gives p_high");
