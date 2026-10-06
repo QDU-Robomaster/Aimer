@@ -34,6 +34,7 @@ depends:
 #include "ArmorTrackerTarget.hpp"
 #include "CameraBase.hpp"
 #include "DurationStatistics.hpp"
+#include "AimerBulletSpeed.hpp"
 #include "AimerHeatFire.hpp"
 #include "AimerLeadCalibration.hpp"
 #include "GimbalPlan.hpp"
@@ -53,6 +54,11 @@ depends:
 using AimerRefereeRobotStatus = RefereeTypes::RobotStatus;
 using AimerRefereeGameStatus = RefereeTypes::GameStatus;
 using AimerRefereeSummary = RefereeTypes::RobotGameRefereePack;
+
+/// 0x0207 中 17 mm 与 42 mm 发射机构的发射机构 ID
+/// Launcher IDs of the 17 mm and 42 mm launchers in 0x0207
+inline constexpr uint8_t REFEREE_LAUNCHER_ID_17MM = 1;
+inline constexpr uint8_t REFEREE_LAUNCHER_ID_42MM = 3;
 
 /**
  * @brief DevC HostData 接收的云台目标数据。
@@ -194,6 +200,24 @@ struct AimerConfig
   /// 弹速低于该值时改用 default_bullet_speed，单位 m/s
   /// default_bullet_speed is used when the bullet speed is below this value, in m/s
   double min_valid_bullet_speed{14.0};
+  /// 是否使用裁判系统 0x0207 的实测弹速；有效读数不足 bullet_speed_min_samples 发时
+  /// 使用 default_bullet_speed
+  /// Whether the measured bullet speed of referee 0x0207 is used; default_bullet_speed is
+  /// used until bullet_speed_min_samples valid readings have arrived
+  bool referee_bullet_speed{true};
+  /// 实测弹速平滑窗口的发数，限制在 1 到 32
+  /// Number of shots in the measured-speed smoothing window, limited to 1 to 32
+  int bullet_speed_window{9};
+  /// 使用实测弹速所需的最少有效读数
+  /// Minimum number of valid readings before the measured speed is used
+  int bullet_speed_min_samples{3};
+  /// 实测弹速的有效上限，单位 m/s；有效下限为 min_valid_bullet_speed
+  /// Upper bound of a valid measured speed, in m/s; the lower bound is
+  /// min_valid_bullet_speed
+  double max_valid_bullet_speed{35.0};
+  /// 实测弹速离群门限的下限，单位 m/s
+  /// Floor of the outlier gate of the measured speed, in m/s
+  double bullet_speed_outlier_m_s{0.5};
   /// 二次阻力加速度系数，a_drag = -k * |v| * v
   /// Quadratic drag acceleration coefficient, a_drag = -k * |v| * v
   double ballistic_drag_k{0.02};
@@ -340,6 +364,25 @@ struct AimerConfig
   /// 横向标准差中与指令 yaw 角速度成正比的时间，单位 s
   /// Time multiplied by the command yaw rate in the lateral standard deviation, in s
   double heat_fire_rate_spread_s{0.01};
+  /// 是否用裁判系统 0x0202 的实测枪管热量修正本地热量估计；最近一包裁判摘要早于
+  /// referee_heat_timeout_s 时只用本地估计
+  /// Whether the local heat estimate is corrected with the barrel heat measured by referee
+  /// 0x0202; only the local estimate is used when the latest referee summary is older than
+  /// referee_heat_timeout_s
+  bool referee_heat{true};
+  /// 实测热量有效的最长时间，单位 s
+  /// Longest time a measured heat stays valid, in s
+  double referee_heat_timeout_s{0.5};
+  /// 实测热量可能尚未计入的出弹时间窗，单位 s，覆盖 0x0202 的发送周期和出弹延迟
+  /// Time window of shots the measured heat may not include yet, in s, covering the
+  /// 0x0202 period and the launch delay
+  double referee_heat_window_s{0.15};
+  /// 使用 42 mm 发射机构的热量；否则使用 17 mm 发射机构的热量
+  /// Use the heat of the 42 mm launcher; otherwise that of the 17 mm launcher
+  bool referee_heat_42mm{false};
+  /// 是否把 0x0204 的冷却增益加到 0x0201 的每秒冷却值上
+  /// Whether the cooling buff of 0x0204 is added to the cooling per second of 0x0201
+  bool referee_cooling_add_buff{false};
   /// 是否在线标定指向超前量：用之后的帧检查云台指向，修正预测延迟，收敛后固定
   /// Whether the pointing lead is calibrated online: the gimbal pointing is checked
   /// against later frames, the prediction delay is corrected and frozen once calibrated
@@ -541,6 +584,19 @@ class AimerCore
   bool HeatAwareFire(const AimerShotCandidate& shot_candidate, double gimbal_error_yaw,
                      double command_yaw_rate, bool gates_passed);
   /**
+   * @brief 用最近一包裁判摘要的实测热量修正本地热量估计；实测值超过
+   *        referee_heat_timeout_s 时不修正。
+   *        Correct the local heat estimate with the measured heat of the latest referee
+   *        summary; no correction when the measurement is older than
+   *        referee_heat_timeout_s.
+   *
+   * @param now_us 当前图像时刻，单位 us。
+   *               Current image time, in us.
+   * @param cooling 每秒冷却值。
+   *                Cooling per second.
+   */
+  void FuseRefereeHeat(uint64_t now_us, double cooling);
+  /**
    * @brief 在线标定指向超前量：记录本帧云台指向，用本帧观测检查此前各帧的指向，按批
    *        修正预测延迟。
    *        Online calibration of the pointing lead: record the gimbal pointing of this
@@ -667,6 +723,24 @@ class AimerCore
   /// 按热量分配开火使用的本地热量估计
   /// Local heat estimate of the heat-aware firing
   AimerDetail::HeatFireState heat_fire_state_{};
+  /// 最近一包裁判摘要中的实测热量和该包的接收时刻（host 时基，单位 us）
+  /// Measured heat of the latest referee summary and its arrival time (host timebase, in
+  /// us)
+  struct RefereeHeatSample
+  {
+    bool valid{false};
+    double heat{0.0};
+    uint64_t receive_us{0};
+  };
+  LibXR::Mutex referee_heat_lock_;
+  RefereeHeatSample referee_heat_sample_{};
+  /// 实测弹速平滑，只在裁判回调中访问
+  /// Measured-speed smoothing, accessed only in the referee callback
+  AimerDetail::BulletSpeedFilter bullet_speed_filter_;
+  /// 是否已收到过裁判摘要，及其中最近的 0x0207 计数
+  /// Whether a referee summary has been received, and its latest 0x0207 count
+  bool have_shot_seq_{false};
+  uint16_t last_shot_seq_{0};
   /// 当前处理帧的图像时间戳，单位 us
   /// Image timestamp of the frame being processed, in us
   uint64_t current_image_us_{0};

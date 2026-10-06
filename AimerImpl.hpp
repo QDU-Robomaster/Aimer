@@ -18,7 +18,12 @@
 inline AimerCore::AimerCore(Config cfg)
     : cfg_(std::move(cfg)),
       referee_topic_name_(cfg_.referee_topic),
-      bullet_speed_(cfg_.default_bullet_speed)
+      bullet_speed_(cfg_.default_bullet_speed),
+      bullet_speed_filter_({.window = cfg_.bullet_speed_window,
+                            .min_samples = cfg_.bullet_speed_min_samples,
+                            .min_speed = cfg_.min_valid_bullet_speed,
+                            .max_speed = cfg_.max_valid_bullet_speed,
+                            .outlier_floor = cfg_.bullet_speed_outlier_m_s})
 {
   cfg_.referee_topic = referee_topic_name_.View();
   lead_calibrator_ = AimerDetail::LeadCalibrator(
@@ -138,14 +143,53 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
  */
 inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
-  referee_heat_limit_.store(static_cast<double>(summary.robot_status.shooter_heat_limit),
-                            std::memory_order_relaxed);
-  referee_cooling_.store(static_cast<double>(summary.robot_status.shooter_cooling_value),
-                         std::memory_order_relaxed);
-  UpdateBulletSpeed(cfg_.default_bullet_speed, referee_topic_name_.CStr());
-  LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
-                static_cast<double>(summary.robot_status.shooter_heat_limit),
-                static_cast<double>(summary.robot_status.shooter_cooling_value),
+  const auto heat_limit = static_cast<double>(summary.robot_status.shooter_heat_limit);
+  double cooling = static_cast<double>(summary.robot_status.shooter_cooling_value);
+  if (cfg_.referee_cooling_add_buff)
+  {
+    cooling += static_cast<double>(summary.robot_buff.cooling_acc);
+  }
+  referee_heat_limit_.store(heat_limit, std::memory_order_relaxed);
+  referee_cooling_.store(cooling, std::memory_order_relaxed);
+
+  if (cfg_.referee_heat)
+  {
+    const auto measured_heat = static_cast<double>(
+        cfg_.referee_heat_42mm ? summary.launcher_42_heat : summary.launcher_17_heat);
+    LibXR::Mutex::LockGuard lock(referee_heat_lock_);
+    referee_heat_sample_ = {.valid = true,
+                            .heat = measured_heat,
+                            .receive_us =
+                                static_cast<uint64_t>(LibXR::Timebase::GetMicroseconds())};
+  }
+
+  // 0x0207 计数变化说明其间有新的出弹，摘要只带最近一发的弹速。
+  // A changed 0x0207 count means new shots in between; the summary carries the speed of
+  // the latest one.
+  const bool new_shot = have_shot_seq_ ? summary.shot_seq != last_shot_seq_
+                                       : summary.shot_seq != 0;
+  have_shot_seq_ = true;
+  last_shot_seq_ = summary.shot_seq;
+  const uint8_t launcher_id = cfg_.referee_heat_42mm ? REFEREE_LAUNCHER_ID_42MM
+                                                     : REFEREE_LAUNCHER_ID_17MM;
+  if (cfg_.referee_bullet_speed && new_shot &&
+      (summary.launcher_data.launcherer_id == 0 ||
+       summary.launcher_data.launcherer_id == launcher_id))
+  {
+    bullet_speed_filter_.AddSample(static_cast<double>(summary.launcher_data.bullet_speed));
+  }
+
+  double speed = cfg_.default_bullet_speed;
+  if (cfg_.referee_bullet_speed)
+  {
+    double estimate = 0.0;
+    if (bullet_speed_filter_.Estimate(estimate))
+    {
+      speed = estimate;
+    }
+  }
+  UpdateBulletSpeed(static_cast<float>(speed), referee_topic_name_.CStr());
+  LogHeatStatus(std::numeric_limits<double>::quiet_NaN(), heat_limit, cooling,
                 referee_topic_name_.CStr(), false);
 }
 
@@ -221,14 +265,23 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
     return;
   }
 
-  if (have_logged_current_heat_)
+  double measured_heat = std::numeric_limits<double>::quiet_NaN();
+  {
+    LibXR::Mutex::LockGuard heat_lock(referee_heat_lock_);
+    if (referee_heat_sample_.valid)
+    {
+      measured_heat = referee_heat_sample_.heat;
+    }
+  }
+  if (have_logged_current_heat_ || (have_logged_heat_status_ && std::isfinite(measured_heat)))
   {
     XR_LOG_INFO(
         "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
         "bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed, last_logged_heat_,
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
+        std::isfinite(measured_heat) ? measured_heat : last_logged_heat_,
         last_logged_heat_limit_, last_logged_cooling_);
   }
   else if (have_logged_heat_status_)
@@ -373,7 +426,7 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
  * @brief 在已有开火门控之后应用按热量分配的开火判定。
  *
  * 热量按裁判系统的热量上限和冷却值在本地推算：每次计入的开火加单发热量，按冷却值连续
- * 衰减。命中概率按出膛时刻估计：横向偏差由请求时刻云台误差留到出膛的部分和随指令角速度
+ * 衰减；启用 referee_heat 且实测热量有效时，再用实测热量修正。命中概率按出膛时刻估计：横向偏差由请求时刻云台误差留到出膛的部分和随指令角速度
  * 增长的偏差组成，标准差由基础项、随预测时域增长的相位项和随指令角速度增长的项组成。
  */
 inline bool AimerCore::HeatAwareFire(const AimerShotCandidate& shot_candidate,
@@ -389,6 +442,10 @@ inline bool AimerCore::HeatAwareFire(const AimerShotCandidate& shot_candidate,
 
   const uint64_t now_us = current_image_us_;
   AimerDetail::CoolHeat(heat_fire_state_, now_us, cooling);
+  if (cfg_.referee_heat)
+  {
+    FuseRefereeHeat(now_us, cooling);
+  }
 
   const Eigen::Vector3d target_xyz = shot_candidate.hit_xyza.head<3>();
   const double distance = std::max(0.3, AimerDetail::HorizontalDistance(target_xyz));
@@ -419,6 +476,43 @@ inline bool AimerCore::HeatAwareFire(const AimerShotCandidate& shot_candidate,
                            cfg_.heat_fire_min_interval_s);
   }
   return fire;
+}
+
+/**
+ * @brief 用最近一包裁判摘要的实测热量修正本地热量估计。
+ *
+ * 实测热量的年龄按 host 时基计算（裁判摘要不带时间戳，接收时刻即采样时刻的近似），
+ * 按冷却值推进到当前时刻。实测值可能尚未计入的出弹为图像时基下最近
+ * 年龄加 referee_heat_window_s 内计入的出弹。
+ */
+inline void AimerCore::FuseRefereeHeat(uint64_t now_us, double cooling)
+{
+  RefereeHeatSample sample{};
+  {
+    LibXR::Mutex::LockGuard lock(referee_heat_lock_);
+    sample = referee_heat_sample_;
+  }
+  if (!sample.valid)
+  {
+    return;
+  }
+  const auto host_now_us = static_cast<uint64_t>(LibXR::Timebase::GetMicroseconds());
+  const double age_s =
+      host_now_us > sample.receive_us
+          ? static_cast<double>(host_now_us - sample.receive_us) * 1e-6
+          : 0.0;
+  if (age_s > cfg_.referee_heat_timeout_s)
+  {
+    return;
+  }
+  const double measured_now = std::max(0.0, sample.heat - std::max(0.0, cooling) * age_s);
+  const auto window_us = static_cast<uint64_t>(
+      std::llround(std::max(0.0, age_s + cfg_.referee_heat_window_s) * 1e6));
+  const uint64_t since_us = now_us > window_us ? now_us - window_us : 0;
+  const double unseen_heat =
+      static_cast<double>(AimerDetail::CountedShotsSince(heat_fire_state_, since_us)) *
+      cfg_.heat_fire_shot_heat;
+  AimerDetail::FuseMeasuredHeat(heat_fire_state_, measured_now, unseen_heat);
 }
 
 /**

@@ -24,6 +24,11 @@ target_include_directories(aimer_heat_fire_test PRIVATE ${CMAKE_CURRENT_LIST_DIR
 target_compile_features(aimer_heat_fire_test PRIVATE cxx_std_20)
 add_test(NAME aimer_heat_fire_test COMMAND aimer_heat_fire_test)
 
+add_executable(aimer_bullet_speed_test bullet_speed_test.cpp)
+target_include_directories(aimer_bullet_speed_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/..)
+target_compile_features(aimer_bullet_speed_test PRIVATE cxx_std_20)
+add_test(NAME aimer_bullet_speed_test COMMAND aimer_bullet_speed_test)
+
 add_executable(aimer_lead_calibration_test lead_calibration_test.cpp)
 target_include_directories(aimer_lead_calibration_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/..)
 target_compile_features(aimer_lead_calibration_test PRIVATE cxx_std_20)

@@ -15,17 +15,29 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace AimerDetail
 {
+/// 记录的最近计入热量的出弹时刻个数
+/// Number of recent counted shot times that are kept
+inline constexpr std::size_t HEAT_RECENT_SHOTS = 16;
+
 /**
  * @brief 本地热量估计状态。
  *        Local barrel heat estimate.
  */
 struct HeatFireState
 {
+  /// 最近计入热量的出弹时刻，环形缓冲，单位 us
+  /// Times of the recent counted shots, ring buffer, in us
+  std::array<uint64_t, HEAT_RECENT_SHOTS> recent_shots_us{};
+  /// 环形缓冲中已写入的出弹个数
+  /// Number of shots written to the ring buffer
+  std::size_t recent_shot_count{0};
   /// 是否已初始化
   /// Whether the state is initialised
   bool valid{false};
@@ -91,7 +103,60 @@ inline bool CountShot(HeatFireState& state, uint64_t now_us, double shot_heat,
   state.last_shot_us = now_us;
   state.relax_ref_us = std::max(state.relax_ref_us, now_us);
   state.has_shot = true;
+  state.recent_shots_us[state.recent_shot_count % HEAT_RECENT_SHOTS] = now_us;
+  ++state.recent_shot_count;
   return true;
+}
+
+/**
+ * @brief 统计晚于给定时刻计入热量的出弹数，最多统计最近 HEAT_RECENT_SHOTS 发。
+ *        Count the counted shots later than the given time, at most the last
+ *        HEAT_RECENT_SHOTS shots.
+ * @param state 热量估计状态 / Heat estimate state.
+ * @param since_us 起始时刻，单位 us，不含该时刻 / Start time in us, exclusive.
+ * @return 出弹数 / Number of shots.
+ */
+inline std::size_t CountedShotsSince(const HeatFireState& state, uint64_t since_us)
+{
+  const std::size_t kept = std::min(state.recent_shot_count, HEAT_RECENT_SHOTS);
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < kept; ++i)
+  {
+    if (state.recent_shots_us[i] > since_us)
+    {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/**
+ * @brief 用裁判系统实测热量修正本地热量估计。
+ *        Correct the local heat estimate with the heat measured by the referee system.
+ *
+ * 实测热量是本地估计的下限；实测值可能尚未计入最近几发，因此上限是实测值加上这些出弹的
+ * 热量。本地估计落在区间内时保持不变，超出时取最近的边界。
+ * The measured heat is a lower bound of the local estimate; the measurement may not yet
+ * include the latest shots, so the upper bound is the measured heat plus the heat of
+ * those shots. A local estimate inside the interval is kept; outside it, the nearest bound
+ * is taken.
+ *
+ * @param state 热量估计状态，已推进到当前时刻 / Heat estimate state, advanced to the
+ *        current time.
+ * @param measured_heat 推进到当前时刻的实测热量 / Measured heat advanced to the current
+ *        time.
+ * @param unseen_heat 实测值可能尚未计入的出弹热量 / Heat of the shots the measurement may
+ *        not include yet.
+ */
+inline void FuseMeasuredHeat(HeatFireState& state, double measured_heat, double unseen_heat)
+{
+  if (!state.valid || !std::isfinite(measured_heat))
+  {
+    return;
+  }
+  const double lower = std::max(0.0, measured_heat);
+  const double upper = lower + std::max(0.0, unseen_heat);
+  state.heat = std::clamp(state.heat, lower, upper);
 }
 
 /**
