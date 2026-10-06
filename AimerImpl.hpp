@@ -642,7 +642,9 @@ inline void AimerCore::UpdateLeadCalibration(const ArmorTrackerTarget& target_ms
     has_gimbal_rotation = has_gimbal_rotation_;
     gimbal_yaw = gimbal_rotation_.ToEulerAngleZYX()[2];
   }
-  if (command_in_force && has_gimbal_rotation && std::isfinite(command_yaw_rate))
+  if (command_in_force && has_gimbal_rotation && std::isfinite(command_yaw_rate) &&
+      AimerDetail::HorizontalDistance(target_msg.position) <=
+          cfg_.lead_calibration_max_distance_m)
   {
     double bullet_speed = bullet_speed_.load(std::memory_order_relaxed);
     if (std::isnan(bullet_speed) || bullet_speed < cfg_.min_valid_bullet_speed)

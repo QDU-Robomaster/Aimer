@@ -356,6 +356,10 @@ struct AimerConfig
   /// 触发重新标定所需的同向连续批数
   /// Consecutive same-sign batches that trigger a recalibration
   int lead_calibration_monitor_batches{3};
+  /// 参与超前量标定的最大目标水平距离，单位 m；更远时飞行时间内的目标机动主导残差
+  /// Largest horizontal target distance used for the lead calibration, in m; farther away
+  /// the target maneuver during the flight dominates the residual
+  double lead_calibration_max_distance_m{4.0};
 };
 
 /**
