@@ -227,7 +227,7 @@ struct AimerConfig
   /// 从开火命令到弹丸出膛的延迟，决定开火采样点，单位 s
   /// Delay from the fire command to the projectile leaving the barrel, determines the
   /// fire sampling point, in s
-  double fire_delay_s{0.0};
+  double fire_delay_s{0.02};
   /// 低速目标的额外预测时间，单位 s
   /// Extra prediction time for low-speed targets, in s
   double low_speed_extra_predict_s{0.015};
@@ -635,6 +635,12 @@ class AimerCore
   bool has_last_command_{false};
   double last_command_yaw_{0.0};
   double last_command_roll_{0.0};
+  /// 上一帧命令的 yaw、roll 角速度和图像时间，用于判断命令是否稳定
+  /// Yaw and roll rates and image time of the previous command, for the command stability
+  /// check
+  double last_command_yaw_vel_{0.0};
+  double last_command_roll_vel_{0.0};
+  uint64_t last_command_image_us_{0};
   bool has_gimbal_rotation_{false};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};

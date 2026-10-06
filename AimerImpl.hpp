@@ -293,6 +293,9 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   {
     last_command_yaw_ = yaw;
     last_command_roll_ = roll;
+    last_command_yaw_vel_ = static_cast<double>(gimbal_plan_msg_.yaw_vel);
+    last_command_roll_vel_ = static_cast<double>(gimbal_plan_msg_.roll_vel);
+    last_command_image_us_ = current_image_us_;
     has_last_command_ = true;
   };
 
@@ -336,10 +339,17 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
     return false;
   }
 
-  const double command_error_yaw =
-      std::abs(AimerDetail::LimitRad(last_command_yaw_ - yaw));
+  // 上一帧命令按其角速度推进到本帧再比较，匀速转动的命令不算不稳定。
+  // The previous command is advanced to this frame with its rate before the comparison,
+  // so a command that turns at a steady rate counts as stable.
+  const double command_dt =
+      current_image_us_ > last_command_image_us_
+          ? static_cast<double>(current_image_us_ - last_command_image_us_) * 1e-6
+          : 0.0;
+  const double command_error_yaw = std::abs(AimerDetail::LimitRad(
+      last_command_yaw_ + last_command_yaw_vel_ * command_dt - yaw));
   const double command_error_roll =
-      std::abs(AimerDetail::LimitRad(last_command_roll_ - roll));
+      std::abs(last_command_roll_ + last_command_roll_vel_ * command_dt - roll);
   const double gimbal_error_yaw_signed = AimerDetail::LimitRad(gimbal_yaw - yaw);
   const double gimbal_error_yaw = std::abs(gimbal_error_yaw_signed);
   const double gimbal_error_roll = std::abs(AimerDetail::LimitRad(gimbal_roll - roll));
