@@ -36,22 +36,22 @@ inline AimerCore::AimerCore(Config cfg)
 }
 
 /**
- * @brief 设置内置 preview 的状态接收器。
+ * @brief 设置每帧状态的接收器。
  */
-inline void AimerCore::SetPreviewSink(PreviewSink sink, void* context)
+inline void AimerCore::SetFrameSink(FrameSink sink, void* context)
 {
-  preview_sink_ = sink;
-  preview_context_ = context;
+  frame_sink_ = sink;
+  frame_context_ = context;
 }
 
 /**
- * @brief 提交本帧 Aimer 状态给内置 preview。
+ * @brief 提交本帧 Aimer 状态给每帧状态接收器。
  */
-inline void AimerCore::PublishPreviewState(const AimerPreviewFrame& state)
+inline void AimerCore::PublishFrameState(const AimerFrameState& state)
 {
-  if (preview_sink_ != nullptr)
+  if (frame_sink_ != nullptr)
   {
-    preview_sink_(preview_context_, state);
+    frame_sink_(frame_context_, state);
   }
 }
 
@@ -276,10 +276,10 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
   if (have_logged_current_heat_ || (have_logged_heat_status_ && std::isfinite(measured_heat)))
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
+        "Aimer fire state=%s target=%d tracking=%d ts_ms=%u yaw=%.3f roll=%.3f "
         "bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
-        static_cast<unsigned long long>(target_msg.image_timestamp_us),
+        static_cast<uint32_t>(target_msg.image_timestamp_us / 1000),
         gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
         std::isfinite(measured_heat) ? measured_heat : last_logged_heat_,
         last_logged_heat_limit_, last_logged_cooling_);
@@ -287,20 +287,20 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
   else if (have_logged_heat_status_)
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
+        "Aimer fire state=%s target=%d tracking=%d ts_ms=%u yaw=%.3f roll=%.3f "
         "bullet=%.2f heat=unknown limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
-        static_cast<unsigned long long>(target_msg.image_timestamp_us),
+        static_cast<uint32_t>(target_msg.image_timestamp_us / 1000),
         gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
         last_logged_heat_limit_, last_logged_cooling_);
   }
   else
   {
     XR_LOG_INFO(
-        "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
+        "Aimer fire state=%s target=%d tracking=%d ts_ms=%u yaw=%.3f roll=%.3f "
         "bullet=%.2f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
-        static_cast<unsigned long long>(target_msg.image_timestamp_us),
+        static_cast<uint32_t>(target_msg.image_timestamp_us / 1000),
         gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed);
   }
   last_logged_fire_state_ = fire;
@@ -522,12 +522,12 @@ inline void AimerCore::OnMonitor()
 {
   const auto summary = target_callback_duration_.GetSummary();
   XR_LOG_INFO(
-      "Aimer monitor: target_callback count=%llu average_us=%llu "
-      "minimum_us=%llu maximum_us=%llu",
-      static_cast<unsigned long long>(summary.sample_count),
-      static_cast<unsigned long long>(summary.average_us),
-      static_cast<unsigned long long>(summary.minimum_us),
-      static_cast<unsigned long long>(summary.maximum_us));
+      "Aimer monitor: target_callback count=%u average_us=%u minimum_us=%u "
+      "maximum_us=%u",
+      static_cast<uint32_t>(summary.sample_count),
+      static_cast<uint32_t>(summary.average_us),
+      static_cast<uint32_t>(summary.minimum_us),
+      static_cast<uint32_t>(summary.maximum_us));
 }
 
 /**
@@ -551,10 +551,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     AimerDetail::StartEngagement(heat_fire_state_, current_image_us_);
   }
   heat_fire_tracking_ = target_msg.tracking;
-  AimerPreviewFrame preview_frame{};
-  preview_frame.image_timestamp_us = target_msg.image_timestamp_us;
-  preview_frame.have_target = true;
-  preview_frame.target = target_msg;
+  AimerFrameState frame_state{};
+  frame_state.image_timestamp_us = target_msg.image_timestamp_us;
+  frame_state.have_target = true;
+  frame_state.target = target_msg;
 
   auto publish_outputs = [&](double publish_bullet_speed)
   {
@@ -578,9 +578,11 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 
     host_gimbal_topic_.Publish(host_gimbal);
     host_fire_topic_.Publish(host_fire);
-    preview_frame.have_host_fire = true;
-    preview_frame.host_fire = host_fire;
-    PublishPreviewState(preview_frame);
+    frame_state.have_host_fire = true;
+    frame_state.host_fire = host_fire;
+    frame_state.control = gimbal_plan_msg_.control;
+    frame_state.host_gimbal = host_gimbal;
+    PublishFrameState(frame_state);
   };
 
   if (target_msg.id != last_target_id_)
@@ -659,10 +661,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   }
 
   const Eigen::Vector3d final_xyz = aim_point.xyza.head<3>();
-  preview_frame.aim_point_valid = true;
-  preview_frame.aim_point = final_xyz;
-  preview_frame.aim_armor_index = aim_point.armor_index;
-  preview_frame.aim_xyza = aim_point.xyza;
+  frame_state.aim_point_valid = true;
+  frame_state.aim_point = final_xyz;
+  frame_state.aim_armor_index = aim_point.armor_index;
+  frame_state.aim_xyza = aim_point.xyza;
   const double yaw = AimerDetail::LimitRad(AimerDetail::BearingYaw(final_xyz) +
                                            cfg_.yaw_offset * AimerDetail::DEG2RAD);
   const double roll = trajectory.elevation + cfg_.roll_offset * AimerDetail::DEG2RAD;

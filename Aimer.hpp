@@ -10,11 +10,7 @@
 /* === MODULE MANIFEST V2 ===
 module_description: 弹道瞄准模块：选择装甲板、预测目标运动并解算云台目标与发射许可 / Ballistic aiming Module that selects the armor plate, predicts the target motion and solves the gimbal target and fire permission
 depends:
-- id: QDU-Robomaster/ArmorTracker
-  ref: same-or-dev
-- id: QDU-Robomaster/CameraBase
-  ref: same-or-dev
-- id: QDU-Robomaster/VisionPreview
+- id: QDU-Robomaster/AutoAimTypes
   ref: same-or-dev
 - id: xrobot-org/DurationStatistics
   ref: same-or-dev
@@ -28,18 +24,17 @@ depends:
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
-#include "ArmorTrackerTarget.hpp"
-#include "CameraBase.hpp"
-#include "DurationStatistics.hpp"
 #include "AimerBulletSpeed.hpp"
 #include "AimerHeatFire.hpp"
 #include "AimerLeadCalibration.hpp"
+#include "AutoAimTypes.hpp"
+#include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
 #include "RefereeTypes.hpp"
-#include "VisionPreview.hpp"
 #include "libxr.hpp"
 #include "libxr_def.hpp"
 #include "libxr_string.hpp"
@@ -111,10 +106,10 @@ struct AimerHostFireNotify
 static_assert(sizeof(AimerHostFireNotify) == 1);
 
 /**
- * @brief Aimer 内置预览绘制所需的同帧状态。
- *        Same-frame state required by the built-in preview of Aimer.
+ * @brief Aimer 处理一帧后的状态，由模块转成 `AutoAim::AimResult` 发布。
+ *        State of Aimer after one frame, published by the Module as `AutoAim::AimResult`.
  */
-struct AimerPreviewFrame
+struct AimerFrameState
 {
   /// 匹配触发沿的 MCU 陀螺仪时间戳，单位 us
   /// MCU gyroscope timestamp matching the trigger edge, in us
@@ -143,6 +138,12 @@ struct AimerPreviewFrame
   /// 本帧发射许可输出
   /// Fire permission output of this frame
   AimerHostFireNotify host_fire{};
+  /// 本帧是否控制云台
+  /// Whether the gimbal is commanded in this frame
+  bool control{false};
+  /// 本帧云台目标输出
+  /// Gimbal target output of this frame
+  AimerHostGimbalTarget host_gimbal{};
 };
 
 /**
@@ -294,11 +295,6 @@ struct AimerConfig
   /// TinyMPC roll 轴加速度代价
   /// TinyMPC roll-axis acceleration cost
   double r_roll_acc{1.0};
-  /// Aimer 内置实时预览的运行参数
-  /// Runtime parameters of the built-in live preview of Aimer
-  VisionPreview::RuntimeParam preview{.preview_window_name = "aimer_preview",
-                                      .preview_scale = 0.5,
-                                      .web_stream_name = "aimer_preview"};
   /// 是否输出运行期统计日志
   /// Whether the runtime statistics log is output
   bool enable_runtime_log{true};
@@ -414,7 +410,7 @@ class AimerCore
 {
  public:
   using Config = AimerConfig;
-  using PreviewSink = void (*)(void*, const AimerPreviewFrame&);
+  using FrameSink = void (*)(void*, const AimerFrameState&);
 
   /**
    * @brief 创建 Aimer 运行核心，初始化 TinyMPC 求解器并订阅 host 域的裁判 Topic。
@@ -434,15 +430,15 @@ class AimerCore
 
  protected:
   /**
-   * @brief 设置接收每帧预览状态的回调。
-   *        Set the callback that receives the preview state of each frame.
+   * @brief 设置接收每帧状态的回调。
+   *        Set the callback that receives the state of each frame.
    *
-   * @param sink 预览状态回调。
-   *             Preview state callback.
+   * @param sink 每帧状态回调。
+   *             Per-frame state callback.
    * @param context 传给回调的第一个参数。
    *                First argument passed to the callback.
    */
-  void SetPreviewSink(PreviewSink sink, void* context);
+  void SetFrameSink(FrameSink sink, void* context);
   /**
    * @brief 使用 tracker 同帧 IMU 更新当前云台姿态。
    *        Update the current gimbal attitude from the same-frame IMU of the tracker.
@@ -540,13 +536,13 @@ class AimerCore
    */
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
   /**
-   * @brief 把本帧 Aimer 状态交给内置预览。
-   *        Hand the Aimer state of this frame to the built-in preview.
+   * @brief 把本帧 Aimer 状态交给每帧状态回调。
+   *        Hand the Aimer state of this frame to the per-frame state callback.
    *
-   * @param state 本帧预览状态。
-   *              Preview state of this frame.
+   * @param state 本帧状态。
+   *              State of this frame.
    */
-  void PublishPreviewState(const AimerPreviewFrame& state);
+  void PublishFrameState(const AimerFrameState& state);
   /**
    * @brief 根据命令稳定性和云台两轴对准情况评估自动开火门控。
    *        Evaluate the automatic fire gating from the command stability and the
@@ -768,8 +764,8 @@ class AimerCore
   TinySolver* roll_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
   mutable LibXR::Mutex runtime_log_lock_{};
-  PreviewSink preview_sink_{nullptr};
-  void* preview_context_{nullptr};
+  FrameSink frame_sink_{nullptr};
+  void* frame_context_{nullptr};
 
   GimbalPlan gimbal_plan_msg_{};
 
@@ -781,138 +777,62 @@ class AimerCore
 };
 
 #include "AimerImpl.hpp"
-#include "AimerPreview.hpp"
 
 /**
- * @brief Aimer 模块：订阅 tracker 的 target_frame，发布云台目标与发射许可，内置预览。
- *        Aimer Module: subscribes to the tracker target_frame, publishes the gimbal
- *        target and the fire permission, and provides a built-in preview.
+ * @brief Aimer 模块：订阅 `<相机名>_tracked`，发布云台目标、发射许可与 `<相机名>_aimed`。
+ *        Aimer Module: subscribes to `<camera>_tracked`, publishes the gimbal target, the
+ *        fire permission and `<camera>_aimed`.
  *
- * @tparam FrameLayoutV 帧布局，与上游相机和 ArmorTracker 相同。
- *                      Frame layout, identical to the upstream camera and ArmorTracker.
+ * 在跟踪器的发布线程里同步处理，每收一帧发一帧。
+ * Runs synchronously in the tracker's publishing thread, one frame out per frame in.
  */
-template <CameraTypes::FrameLayout FrameLayoutV>
 class Aimer : public AimerCore
 {
  public:
   using Config = AimerConfig;
-  using CameraCalibration = CameraTypes::CameraCalibration;
-  using TargetFrame = TrackedFrame<FrameLayoutV>;
-  using TargetFrameMessage = TrackedFrameMessage<FrameLayoutV>;
 
-  /**
-   * @brief 返回全部取默认值的配置。
-   *        Return the configuration holding all defaults.
-   *
-   * 预览默认关闭，窗口名为 `aimer_preview`，缩放为 0.5，Web 流名为 `aimer_preview`。
-   * The preview is disabled by default, with window name `aimer_preview`, scale 0.5 and
-   * web stream name `aimer_preview`.
-   *
-   * @return 默认配置。
-   *         Default configuration.
-   */
+  /// 全部取默认值的配置 / Configuration holding all defaults.
   static Config DefaultConfig() { return {}; }
 
   /**
-   * @brief 返回默认相机标定：1280x720，fx = fy = 800，主点 (640, 360)，零畸变。
-   *        Return the default camera calibration: 1280x720, fx = fy = 800, principal
-   *        point (640, 360), zero distortion.
-   *
-   * @return 默认相机标定。
-   *         Default camera calibration.
+   * @param camera_name 相机名，决定订阅与发布的 Topic / Camera name, selects the Topics
+   * @param cfg 运行时配置 / Runtime configuration
    */
-  static CameraCalibration DefaultCalibration()
+  explicit Aimer(std::string camera_name, Config cfg = {})
+      : AimerCore(cfg),
+        camera_name_(std::move(camera_name)),
+        aimed_topic_(LibXR::Topic::CreateTopic<const AutoAim::AimedFrame*>(
+            StageTopicName(camera_name_, AutoAim::STAGE_AIMED).c_str()))
   {
-    return {.native_width = 1280,
-            .native_height = 720,
-            .camera_matrix = {800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0},
-            .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB,
-            .distortion_coefficients = {0.0, 0.0, 0.0, 0.0, 0.0},
-            .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0},
-            .projection_matrix = {800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0,
-                                  0.0, 1.0, 0.0}};
-  }
-
-  /**
-   * @brief 构造 Aimer，持有原生相机标定，并订阅 tracker 域的 target_frame。
-   *        Construct Aimer, hold the native camera calibration and subscribe to the
-   *        target_frame of the tracker domain.
-   *
-   * @param cfg 运行时配置。
-   *            Runtime configuration.
-   * @param calibration 原生传感器坐标系下的相机标定，用于预览投影，按值持有。
-   *                    Camera calibration in the native sensor frame used for the preview
-   *                    projection, held by value.
-   */
-  Aimer(Config cfg = DefaultConfig(),
-        CameraCalibration calibration = DefaultCalibration())
-      : AimerCore(cfg), calibration_(std::move(calibration))
-  {
-    ASSERT(CameraBaseIntrinsicSanity::CameraCalibrationReasonable(calibration_));
-    if (cfg.preview.enabled)
-    {
-      preview_.emplace(AimerDetail::MakeAimerPreviewConfig(cfg), calibration_);
-      SetPreviewSink([](void* context, const AimerPreviewFrame& frame)
-                     { static_cast<Aimer*>(context)->SubmitPreviewFrame(frame); }, this);
-    }
-    RegisterTargetFrameCallback();
+    SetFrameSink([](void* context, const AimerFrameState& state)
+                 { static_cast<Aimer*>(context)->state_ = state; }, this);
+    auto on_tracked = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, const AutoAim::TrackedFrame* frame)
+        { self->OnTracked(*frame); }, this);
+    AutoAim::RequireTopic<const AutoAim::TrackedFrame*>(
+        StageTopicName(camera_name_, AutoAim::STAGE_TRACKED))
+        .RegisterCallback(on_tracked);
   }
 
  private:
-  /**
-   * @brief 订阅 tracker/target_frame。
-   *        Subscribe to tracker/target_frame.
-   */
-  void RegisterTargetFrameCallback()
+  void OnTracked(const AutoAim::TrackedFrame& frame)
   {
-    LibXR::Topic::Domain tracker_domain("tracker");
-    target_frame_topic_ =
-        LibXR::Topic::FindOrCreate<TargetFrameMessage>("target_frame", &tracker_domain);
-    auto callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, const TargetFrameMessage& message)
-        {
-          if (message == nullptr || !message->Valid())
-          {
-            return;
-          }
-          self->TargetFrameCallback(*message);
-        },
-        this);
-    target_frame_topic_.RegisterCallback(callback);
-  }
-
-  /**
-   * @brief 处理 tracker 同帧的目标与源图像。
-   *        Handle the target and the source image of the same tracker frame.
-   *
-   * @param frame 目标帧。
-   *              Target frame.
-   */
-  void TargetFrameCallback(const TargetFrame& frame)
-  {
-    current_target_frame_ = &frame;
-    UpdateGimbalRotationFromSyncedImu(frame.imu.rotation_wxyz);
+    state_ = {};
+    UpdateGimbalRotationFromSyncedImu(frame.detected.synced.imu.rotation_wxyz);
     TargetCallback(frame.target);
-    current_target_frame_ = nullptr;
+    AutoAim::AimedFrame aimed{frame, {}};
+    AutoAim::AimResult& aim = aimed.aim;
+    aim.control = state_.control;
+    aim.fire = state_.host_fire.isfire;
+    aim.yaw = state_.host_gimbal.yaw;
+    aim.pitch = state_.host_gimbal.pit;
+    aim.aim_point = state_.aim_point_valid ? state_.aim_point : Eigen::Vector3d::Zero();
+    aim.plate = state_.aim_point_valid ? state_.aim_armor_index : -1;
+    const AutoAim::AimedFrame* payload = &aimed;
+    aimed_topic_.Publish(payload);
   }
 
-  /**
-   * @brief 把 AimerCore 生成的预览状态交给内置预览。
-   *        Hand the preview state generated by AimerCore to the built-in preview.
-   *
-   * @param frame 预览状态。
-   *              Preview state.
-   */
-  void SubmitPreviewFrame(const AimerPreviewFrame& frame)
-  {
-    if (preview_.has_value())
-    {
-      preview_->OnAimerFrame(frame, current_target_frame_);
-    }
-  }
-
-  LibXR::Topic target_frame_topic_ = LibXR::Topic();
-  const TargetFrame* current_target_frame_{nullptr};
-  const CameraCalibration calibration_;
-  std::optional<AimerPreview<FrameLayoutV>> preview_;
+  std::string camera_name_;
+  LibXR::Topic aimed_topic_;
+  AimerFrameState state_{};
 };
