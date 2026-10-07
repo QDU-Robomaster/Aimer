@@ -18,9 +18,19 @@
 inline AimerCore::AimerCore(Config cfg)
     : cfg_(std::move(cfg)),
       referee_topic_name_(cfg_.referee_topic),
-      bullet_speed_(cfg_.default_bullet_speed)
+      bullet_speed_(cfg_.default_bullet_speed),
+      bullet_speed_filter_({.window = cfg_.bullet_speed_window,
+                            .min_samples = cfg_.bullet_speed_min_samples,
+                            .min_speed = cfg_.min_valid_bullet_speed,
+                            .max_speed = cfg_.max_valid_bullet_speed,
+                            .outlier_floor = cfg_.bullet_speed_outlier_m_s})
 {
   cfg_.referee_topic = referee_topic_name_.View();
+  lead_calibrator_ = AimerDetail::LeadCalibrator(
+      {.calibration_batches = cfg_.lead_calibration_batches,
+       .max_adjust_s = cfg_.lead_calibration_max_adjust_s,
+       .monitor_threshold_s = cfg_.lead_calibration_monitor_threshold_s,
+       .monitor_batches = cfg_.lead_calibration_monitor_batches});
   SetupGimbalPlanSolvers();
   RegisterHostInputCallbacks();
 }
@@ -133,10 +143,53 @@ inline void AimerCore::UpdateBulletSpeed(float bullet_speed_msg, const char* sou
  */
 inline void AimerCore::RefereeSummaryCallback(const AimerRefereeSummary& summary)
 {
-  UpdateBulletSpeed(cfg_.default_bullet_speed, referee_topic_name_.CStr());
-  LogHeatStatus(std::numeric_limits<double>::quiet_NaN(),
-                static_cast<double>(summary.robot_status.shooter_heat_limit),
-                static_cast<double>(summary.robot_status.shooter_cooling_value),
+  const auto heat_limit = static_cast<double>(summary.robot_status.shooter_heat_limit);
+  double cooling = static_cast<double>(summary.robot_status.shooter_cooling_value);
+  if (cfg_.referee_cooling_add_buff)
+  {
+    cooling += static_cast<double>(summary.robot_buff.cooling_acc);
+  }
+  referee_heat_limit_.store(heat_limit, std::memory_order_relaxed);
+  referee_cooling_.store(cooling, std::memory_order_relaxed);
+
+  if (cfg_.referee_heat)
+  {
+    const auto measured_heat = static_cast<double>(
+        cfg_.referee_heat_42mm ? summary.launcher_42_heat : summary.launcher_17_heat);
+    LibXR::Mutex::LockGuard lock(referee_heat_lock_);
+    referee_heat_sample_ = {.valid = true,
+                            .heat = measured_heat,
+                            .receive_us =
+                                static_cast<uint64_t>(LibXR::Timebase::GetMicroseconds())};
+  }
+
+  // 0x0207 计数变化说明其间有新的出弹，摘要只带最近一发的弹速。
+  // A changed 0x0207 count means new shots in between; the summary carries the speed of
+  // the latest one.
+  const bool new_shot = have_shot_seq_ ? summary.shot_seq != last_shot_seq_
+                                       : summary.shot_seq != 0;
+  have_shot_seq_ = true;
+  last_shot_seq_ = summary.shot_seq;
+  const uint8_t launcher_id = cfg_.referee_heat_42mm ? REFEREE_LAUNCHER_ID_42MM
+                                                     : REFEREE_LAUNCHER_ID_17MM;
+  if (cfg_.referee_bullet_speed && new_shot &&
+      (summary.launcher_data.launcherer_id == 0 ||
+       summary.launcher_data.launcherer_id == launcher_id))
+  {
+    bullet_speed_filter_.AddSample(static_cast<double>(summary.launcher_data.bullet_speed));
+  }
+
+  double speed = cfg_.default_bullet_speed;
+  if (cfg_.referee_bullet_speed)
+  {
+    double estimate = 0.0;
+    if (bullet_speed_filter_.Estimate(estimate))
+    {
+      speed = estimate;
+    }
+  }
+  UpdateBulletSpeed(static_cast<float>(speed), referee_topic_name_.CStr());
+  LogHeatStatus(std::numeric_limits<double>::quiet_NaN(), heat_limit, cooling,
                 referee_topic_name_.CStr(), false);
 }
 
@@ -212,14 +265,23 @@ inline void AimerCore::LogFireState(const ArmorTrackerTarget& target_msg, bool f
     return;
   }
 
-  if (have_logged_current_heat_)
+  double measured_heat = std::numeric_limits<double>::quiet_NaN();
+  {
+    LibXR::Mutex::LockGuard heat_lock(referee_heat_lock_);
+    if (referee_heat_sample_.valid)
+    {
+      measured_heat = referee_heat_sample_.heat;
+    }
+  }
+  if (have_logged_current_heat_ || (have_logged_heat_status_ && std::isfinite(measured_heat)))
   {
     XR_LOG_INFO(
         "Aimer fire state=%s target=%d tracking=%d ts=%llu yaw=%.3f roll=%.3f "
         "bullet=%.2f heat=%.1f limit=%.1f cooling=%.1f",
         fire ? "ON" : "OFF", static_cast<int>(target_msg.id), target_msg.tracking ? 1 : 0,
         static_cast<unsigned long long>(target_msg.image_timestamp_us),
-        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed, last_logged_heat_,
+        gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll, bullet_speed,
+        std::isfinite(measured_heat) ? measured_heat : last_logged_heat_,
         last_logged_heat_limit_, last_logged_cooling_);
   }
   else if (have_logged_heat_status_)
@@ -284,6 +346,9 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   {
     last_command_yaw_ = yaw;
     last_command_roll_ = roll;
+    last_command_yaw_vel_ = static_cast<double>(gimbal_plan_msg_.yaw_vel);
+    last_command_roll_vel_ = static_cast<double>(gimbal_plan_msg_.roll_vel);
+    last_command_image_us_ = current_image_us_;
     has_last_command_ = true;
   };
 
@@ -327,11 +392,19 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
     return false;
   }
 
-  const double command_error_yaw =
-      std::abs(AimerDetail::LimitRad(last_command_yaw_ - yaw));
+  // 上一帧命令按其角速度推进到本帧再比较，匀速转动的命令不算不稳定。
+  // The previous command is advanced to this frame with its rate before the comparison,
+  // so a command that turns at a steady rate counts as stable.
+  const double command_dt =
+      current_image_us_ > last_command_image_us_
+          ? static_cast<double>(current_image_us_ - last_command_image_us_) * 1e-6
+          : 0.0;
+  const double command_error_yaw = std::abs(AimerDetail::LimitRad(
+      last_command_yaw_ + last_command_yaw_vel_ * command_dt - yaw));
   const double command_error_roll =
-      std::abs(AimerDetail::LimitRad(last_command_roll_ - roll));
-  const double gimbal_error_yaw = std::abs(AimerDetail::LimitRad(gimbal_yaw - yaw));
+      std::abs(last_command_roll_ + last_command_roll_vel_ * command_dt - roll);
+  const double gimbal_error_yaw_signed = AimerDetail::LimitRad(gimbal_yaw - yaw);
+  const double gimbal_error_yaw = std::abs(gimbal_error_yaw_signed);
   const double gimbal_error_roll = std::abs(AimerDetail::LimitRad(gimbal_roll - roll));
 
   const bool command_stable = command_error_yaw < yaw_threshold * 2.0 &&
@@ -339,8 +412,107 @@ inline bool AimerCore::ShouldAutoFire(const AimerShotCandidate& shot_candidate,
   const bool gimbal_aligned =
       gimbal_error_yaw < yaw_threshold && gimbal_error_roll < roll_threshold;
 
+  bool fire = command_stable && gimbal_aligned;
+  if (cfg_.heat_aware_fire)
+  {
+    fire = HeatAwareFire(shot_candidate, gimbal_error_yaw_signed,
+                         static_cast<double>(gimbal_plan_msg_.yaw_vel), fire);
+  }
   remember_command();
-  return command_stable && gimbal_aligned;
+  return fire;
+}
+
+/**
+ * @brief 在已有开火门控之后应用按热量分配的开火判定。
+ *
+ * 热量按裁判系统的热量上限和冷却值在本地推算：每次计入的开火加单发热量，按冷却值连续
+ * 衰减；启用 referee_heat 且实测热量有效时，再用实测热量修正。命中概率按出膛时刻估计：横向偏差由请求时刻云台误差留到出膛的部分和随指令角速度
+ * 增长的偏差组成，标准差由基础项、随预测时域增长的相位项和随指令角速度增长的项组成。
+ */
+inline bool AimerCore::HeatAwareFire(const AimerShotCandidate& shot_candidate,
+                                     double gimbal_error_yaw, double command_yaw_rate,
+                                     bool gates_passed)
+{
+  const double limit = referee_heat_limit_.load(std::memory_order_relaxed);
+  const double cooling = referee_cooling_.load(std::memory_order_relaxed);
+  if (!(limit > 0.0))
+  {
+    return gates_passed;
+  }
+
+  const uint64_t now_us = current_image_us_;
+  AimerDetail::CoolHeat(heat_fire_state_, now_us, cooling);
+  if (cfg_.referee_heat)
+  {
+    FuseRefereeHeat(now_us, cooling);
+  }
+
+  const Eigen::Vector3d target_xyz = shot_candidate.hit_xyza.head<3>();
+  const double distance = std::max(0.3, AimerDetail::HorizontalDistance(target_xyz));
+  const double half_width =
+      0.5 * AimerDetail::SMALL_ARMOR_WIDTH_M * std::cos(std::abs(shot_candidate.view_angle)) -
+      AimerDetail::FIRE_BULLET_SPREAD_M;
+  const double horizon = std::max(0.0, shot_candidate.fly_time) + cfg_.heat_fire_horizon_extra_s;
+  const double phase_sigma = cfg_.heat_fire_phase_sigma_rad_s * horizon * current_target_radius_;
+  const double bias = AimerDetail::ExitLateralBias(distance, gimbal_error_yaw,
+                                                   cfg_.heat_fire_gimbal_error_gain,
+                                                   command_yaw_rate, cfg_.heat_fire_rate_bias_s);
+  const double sigma =
+      AimerDetail::ExitLateralSigma(cfg_.heat_fire_sigma_m, phase_sigma, distance,
+                                    command_yaw_rate, cfg_.heat_fire_rate_spread_s);
+  const double p_hit = AimerDetail::HitProbability(half_width, bias, sigma);
+
+  const double since_shot_s =
+      static_cast<double>(now_us - std::min(now_us, heat_fire_state_.relax_ref_us)) * 1e-6;
+  const double threshold = AimerDetail::HeatFireThreshold(
+      cfg_.heat_fire_p_low, cfg_.heat_fire_p_high, cfg_.heat_fire_p_floor,
+      cfg_.heat_fire_relax_s, heat_fire_state_.heat / limit, since_shot_s);
+
+  const bool fire = gates_passed && heat_fire_state_.heat + cfg_.heat_fire_shot_heat <= limit &&
+                    p_hit >= threshold;
+  if (fire)
+  {
+    AimerDetail::CountShot(heat_fire_state_, now_us, cfg_.heat_fire_shot_heat,
+                           cfg_.heat_fire_min_interval_s);
+  }
+  return fire;
+}
+
+/**
+ * @brief 用最近一包裁判摘要的实测热量修正本地热量估计。
+ *
+ * 实测热量的年龄按 host 时基计算（裁判摘要不带时间戳，接收时刻即采样时刻的近似），
+ * 按冷却值推进到当前时刻。实测值可能尚未计入的出弹为图像时基下最近
+ * 年龄加 referee_heat_window_s 内计入的出弹。
+ */
+inline void AimerCore::FuseRefereeHeat(uint64_t now_us, double cooling)
+{
+  RefereeHeatSample sample{};
+  {
+    LibXR::Mutex::LockGuard lock(referee_heat_lock_);
+    sample = referee_heat_sample_;
+  }
+  if (!sample.valid)
+  {
+    return;
+  }
+  const auto host_now_us = static_cast<uint64_t>(LibXR::Timebase::GetMicroseconds());
+  const double age_s =
+      host_now_us > sample.receive_us
+          ? static_cast<double>(host_now_us - sample.receive_us) * 1e-6
+          : 0.0;
+  if (age_s > cfg_.referee_heat_timeout_s)
+  {
+    return;
+  }
+  const double measured_now = std::max(0.0, sample.heat - std::max(0.0, cooling) * age_s);
+  const auto window_us = static_cast<uint64_t>(
+      std::llround(std::max(0.0, age_s + cfg_.referee_heat_window_s) * 1e6));
+  const uint64_t since_us = now_us > window_us ? now_us - window_us : 0;
+  const double unseen_heat =
+      static_cast<double>(AimerDetail::CountedShotsSince(heat_fire_state_, since_us)) *
+      cfg_.heat_fire_shot_heat;
+  AimerDetail::FuseMeasuredHeat(heat_fire_state_, measured_now, unseen_heat);
 }
 
 /**
@@ -365,8 +537,20 @@ inline void AimerCore::OnMonitor()
 inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
 {
   auto target_callback_measurement = target_callback_duration_.Measure();
+  if (cfg_.lead_calibration)
+  {
+    UpdateLeadCalibration(target_msg, gimbal_plan_msg_.control,
+                          static_cast<double>(gimbal_plan_msg_.yaw_vel));
+  }
   gimbal_plan_msg_ = {};
   gimbal_plan_msg_.image_timestamp_us = target_msg.image_timestamp_us;
+  current_image_us_ = target_msg.image_timestamp_us;
+  current_target_radius_ = target_msg.radius_1 > 0.05 ? target_msg.radius_1 : 0.2;
+  if (target_msg.tracking && (!heat_fire_tracking_ || target_msg.id != last_target_id_))
+  {
+    AimerDetail::StartEngagement(heat_fire_state_, current_image_us_);
+  }
+  heat_fire_tracking_ = target_msg.tracking;
   AimerPreviewFrame preview_frame{};
   preview_frame.image_timestamp_us = target_msg.image_timestamp_us;
   preview_frame.have_target = true;
@@ -413,8 +597,10 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
     bullet_speed = cfg_.default_bullet_speed;
   }
 
+  const double lead_adjust = cfg_.lead_calibration ? lead_calibrator_.Adjust() : 0.0;
   const double delay_time =
-      target_msg.tracking ? AimerDetail::FixedPredictDelay(cfg_, target_msg) : 0.0;
+      target_msg.tracking ? AimerDetail::FixedPredictDelay(cfg_, target_msg) + lead_adjust
+                          : 0.0;
   if (!target_msg.tracking)
   {
     has_last_command_ = false;
@@ -491,4 +677,122 @@ inline void AimerCore::TargetCallback(const ArmorTrackerTarget& target_msg)
   gimbal_plan_msg_.fire = ShouldAutoFire(fire_shot_candidate, gimbal_plan_msg_.fire,
                                          gimbal_plan_msg_.yaw, gimbal_plan_msg_.roll);
   publish_outputs(bullet_speed);
+}
+
+/**
+ * @brief 在线标定指向超前量。
+ *
+ * 本帧图像时刻的云台 yaw 和当前生效指令的 yaw 角速度存为样本，到达时刻取本帧图像时刻加
+ * 飞行时间。到达时刻不晚于本帧图像时刻的样本用本帧目标状态回推到到达时刻，取方位最接近
+ * 云台 yaw 的装甲板求残差；本帧比到达时刻晚 25 ms 以上、视角超过 70 度或残差超过 3 度的
+ * 样本不用。
+ */
+inline void AimerCore::UpdateLeadCalibration(const ArmorTrackerTarget& target_msg,
+                                             bool command_in_force, double command_yaw_rate)
+{
+  constexpr uint64_t MAX_OBSERVATION_LATE_US = 25000;
+  constexpr double MAX_VIEW_RAD = 70.0 * AimerDetail::DEG2RAD;
+  constexpr double MAX_RESIDUAL_RAD = 3.0 * AimerDetail::DEG2RAD;
+
+  if (!target_msg.tracking || target_msg.id != last_target_id_)
+  {
+    lead_pending_.clear();
+    return;
+  }
+  const uint64_t now_us = target_msg.image_timestamp_us;
+
+  while (!lead_pending_.empty() && lead_pending_.front().arrival_us <= now_us)
+  {
+    const LeadSample sample = lead_pending_.front();
+    lead_pending_.pop_front();
+    if (now_us - sample.arrival_us > MAX_OBSERVATION_LATE_US)
+    {
+      continue;
+    }
+    AimerDetail::PredictedTarget observed{target_msg};
+    observed.Predict(-static_cast<double>(now_us - sample.arrival_us) * 1e-6);
+    double residual = std::numeric_limits<double>::infinity();
+    double view = std::numeric_limits<double>::infinity();
+    for (const auto& xyza : observed.GetArmorXYZAList())
+    {
+      const double candidate =
+          AimerDetail::LimitRad(sample.gimbal_yaw - AimerDetail::BearingYaw(xyza.head<3>()));
+      if (std::abs(candidate) < std::abs(residual))
+      {
+        residual = candidate;
+        view = AimerDetail::ViewAngle(observed.msg, xyza);
+      }
+    }
+    if (std::abs(view) <= MAX_VIEW_RAD && std::abs(residual) < MAX_RESIDUAL_RAD)
+    {
+      lead_calibrator_.AddSample(sample.command_yaw_rate, residual);
+    }
+  }
+
+  bool has_gimbal_rotation = false;
+  double gimbal_yaw = 0.0;
+  {
+    LibXR::Mutex::LockGuard lock(gimbal_rotation_lock_);
+    has_gimbal_rotation = has_gimbal_rotation_;
+    gimbal_yaw = gimbal_rotation_.ToEulerAngleZYX()[2];
+  }
+  if (command_in_force && has_gimbal_rotation && std::isfinite(command_yaw_rate) &&
+      AimerDetail::HorizontalDistance(target_msg.position) <=
+          cfg_.lead_calibration_max_distance_m)
+  {
+    double bullet_speed = bullet_speed_.load(std::memory_order_relaxed);
+    if (std::isnan(bullet_speed) || bullet_speed < cfg_.min_valid_bullet_speed)
+    {
+      bullet_speed = cfg_.default_bullet_speed;
+    }
+    // 水平距离除以弹速再乘 1.05，近似计入阻力；只用于确定用哪一帧检查。
+    // Horizontal distance over bullet speed times 1.05 approximates the drag; it only
+    // selects the frame used for the check.
+    const double fly_time =
+        AimerDetail::HorizontalDistance(target_msg.position) / bullet_speed * 1.05;
+    lead_pending_.push_back({now_us + static_cast<uint64_t>(std::llround(fly_time * 1e6)),
+                             gimbal_yaw, command_yaw_rate});
+  }
+
+  if (!lead_calibrator_.BatchReady())
+  {
+    return;
+  }
+  using Event = AimerDetail::LeadCalibrator::Event;
+  const auto result = lead_calibrator_.CloseBatch();
+  if (result.event == Event::CORRECTED || result.event == Event::FROZEN ||
+      result.event == Event::RESTARTED)
+  {
+    lead_pending_.clear();
+  }
+  if (!cfg_.enable_runtime_log)
+  {
+    return;
+  }
+  switch (result.event)
+  {
+    case Event::SKIPPED:
+      XR_LOG_INFO("Aimer lead calibration: batch skipped, too little command yaw rate");
+      break;
+    case Event::CORRECTED:
+      XR_LOG_INFO("Aimer lead calibration: lead=%.1f ms adjust=%.1f ms samples=%.0f",
+                  result.lead_s * 1e3, result.adjust_s * 1e3, result.samples);
+      break;
+    case Event::FROZEN:
+      XR_LOG_INFO(
+          "Aimer lead calibration: frozen adjust=%.1f ms; to keep it, add %.4f s to "
+          "gimbal_response_delay_s",
+          result.adjust_s * 1e3, result.adjust_s);
+      break;
+    case Event::MONITORED:
+      XR_LOG_INFO("Aimer lead calibration: monitor lead=%.1f ms adjust=%.1f ms",
+                  result.lead_s * 1e3, result.adjust_s * 1e3);
+      break;
+    case Event::RESTARTED:
+      XR_LOG_INFO("Aimer lead calibration: lead %.1f ms persists, recalibrating",
+                  result.lead_s * 1e3);
+      break;
+    case Event::NONE:
+      break;
+  }
 }

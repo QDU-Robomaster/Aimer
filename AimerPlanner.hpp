@@ -23,8 +23,6 @@ inline constexpr double PLAN_DEFAULT_DT_S = 0.01;
 inline constexpr int PLAN_HORIZON = 75;
 /// 从规划 horizon 中取出的命令点索引。
 inline constexpr int PLAN_HALF_HORIZON = PLAN_HORIZON / 2;
-/// MPC 开火误差门控使用的采样偏移。
-inline constexpr int PLAN_SHOOT_OFFSET = 2;
 
 /// 参考轨迹行含义：yaw 偏移、yaw 速度、roll 轴命令、roll 轴速度。
 using PlanTrajectory = Eigen::Matrix<double, 4, PLAN_HORIZON>;
@@ -69,12 +67,8 @@ inline bool IsFiniteGimbalPlanSample(const GimbalPlanSample& sample)
  */
 inline int PlanFireIndex(const AimerConfig& cfg)
 {
-  int fire_offset =
+  const int fire_offset =
       static_cast<int>(std::llround(std::max(0.0, cfg.fire_delay_s) / PLAN_DEFAULT_DT_S));
-  if (fire_offset == 0)
-  {
-    fire_offset = PLAN_SHOOT_OFFSET;
-  }
   return std::min(PLAN_HORIZON - 1, PLAN_HALF_HORIZON + fire_offset);
 }
 
@@ -101,21 +95,29 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
   center_target.Predict(delay_time);
   int reference_lock_id = initial_lock_id;
 
-  const auto rough_aim =
-      ComputeTrajectoryAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
+  // 中心采样用有阻力弹道求飞行时间和俯仰，与直接命令一致；其余采样用无阻力解析解，
+  // 俯仰加上中心采样两种解之差。
+  // The centre sample uses the drag ballistics for the flight time and the elevation, as
+  // the direct command does; the other samples use the drag-free analytic solution with
+  // the elevation offset between the two solutions at the centre.
+  const auto rough_aim = BuildAimCommandFromAimPoint(
+      cfg, ChooseTrajectoryAimPoint(cfg, center_target, reference_lock_id), bullet_speed);
   if (!rough_aim.valid)
   {
     return false;
   }
 
   center_target.Predict(rough_aim.fly_time);
-  const auto center_aim =
-      ComputeTrajectoryAimCommand(cfg, center_target, bullet_speed, reference_lock_id);
-  if (!center_aim.valid)
+  const auto center_aim = BuildAimCommandFromAimPoint(
+      cfg, ChooseTrajectoryAimPoint(cfg, center_target, reference_lock_id), bullet_speed);
+  const auto center_no_drag =
+      BuildTrajectoryAimCommandFromAimPoint(cfg, center_aim.aim_point, bullet_speed);
+  if (!center_aim.valid || !center_no_drag.valid)
   {
     return false;
   }
   yaw0 = center_aim.yaw_roll.x();
+  const double drag_elevation = center_aim.yaw_roll.y() - center_no_drag.yaw_roll.y();
 
   PredictedTarget moving_target = center_target;
   moving_target.Predict(-PLAN_DEFAULT_DT_S * (PLAN_HALF_HORIZON + 1));
@@ -152,7 +154,7 @@ inline bool BuildReferenceTrajectory(const AimerConfig& cfg,
     const double roll_vel = (yaw_roll_next.yaw_roll.y() - yaw_roll_last.yaw_roll.y()) /
                             (2.0 * PLAN_DEFAULT_DT_S);
     trajectory.col(index) << LimitRad(yaw_roll.yaw_roll.x() - yaw0), yaw_vel,
-        yaw_roll.yaw_roll.y(), roll_vel;
+        yaw_roll.yaw_roll.y() + drag_elevation, roll_vel;
     if (index == fire_index)
     {
       fire_target = sample_target;
@@ -340,9 +342,9 @@ inline bool AimerCore::BuildMpcGimbalPlan(const ArmorTrackerTarget& target_msg,
           std::chrono::duration<double, std::milli>(roll_finish - plan_start).count();
       XR_LOG_INFO(
           "Aimer plan timing ref_ms=%.3f yaw_mpc_ms=%.3f roll_mpc_ms=%.3f total_ms=%.3f "
-          "output_err=%.4f shot_err=%.4f fire=%d",
+          "output_err=%.4f shot_err=%.4f fire=%d iter=%d/%d",
           ref_ms, yaw_ms, roll_ms, total_ms, output_plan_error, shot_plan_error,
-          gimbal_plan_msg_.fire ? 1 : 0);
+          gimbal_plan_msg_.fire ? 1 : 0, yaw_solver_->work->iter, roll_solver_->work->iter);
     }
   }
   return true;
