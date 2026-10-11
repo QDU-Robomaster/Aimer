@@ -10,11 +10,7 @@
 /* === MODULE MANIFEST V2 ===
 module_description: 弹道瞄准模块：选择装甲板、预测目标运动并解算云台目标与发射许可 / Ballistic aiming Module that selects the armor plate, predicts the target motion and solves the gimbal target and fire permission
 depends:
-- id: QDU-Robomaster/ArmorTracker
-  ref: same-or-dev
-- id: QDU-Robomaster/CameraBase
-  ref: same-or-dev
-- id: QDU-Robomaster/VisionPreview
+- id: QDU-Robomaster/AutoAimTypes
   ref: same-or-dev
 - id: xrobot-org/DurationStatistics
   ref: same-or-dev
@@ -26,16 +22,19 @@ depends:
 #include <Eigen/Dense>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
-#include "ArmorTrackerTarget.hpp"
-#include "CameraBase.hpp"
+#include "AimerBulletSpeed.hpp"
+#include "AimerHeatFire.hpp"
+#include "AimerLeadCalibration.hpp"
+#include "AutoAimTypes.hpp"
 #include "DurationStatistics.hpp"
 #include "GimbalPlan.hpp"
 #include "RefereeTypes.hpp"
-#include "VisionPreview.hpp"
 #include "libxr.hpp"
 #include "libxr_def.hpp"
 #include "libxr_string.hpp"
@@ -50,6 +49,11 @@ depends:
 using AimerRefereeRobotStatus = RefereeTypes::RobotStatus;
 using AimerRefereeGameStatus = RefereeTypes::GameStatus;
 using AimerRefereeSummary = RefereeTypes::RobotGameRefereePack;
+
+/// 0x0207 中 17 mm 与 42 mm 发射机构的发射机构 ID
+/// Launcher IDs of the 17 mm and 42 mm launchers in 0x0207
+inline constexpr uint8_t REFEREE_LAUNCHER_ID_17MM = 1;
+inline constexpr uint8_t REFEREE_LAUNCHER_ID_42MM = 3;
 
 /**
  * @brief DevC HostData 接收的云台目标数据。
@@ -102,10 +106,10 @@ struct AimerHostFireNotify
 static_assert(sizeof(AimerHostFireNotify) == 1);
 
 /**
- * @brief Aimer 内置预览绘制所需的同帧状态。
- *        Same-frame state required by the built-in preview of Aimer.
+ * @brief Aimer 处理一帧后的状态，由模块转成 `AutoAim::AimResult` 发布。
+ *        State of Aimer after one frame, published by the Module as `AutoAim::AimResult`.
  */
-struct AimerPreviewFrame
+struct AimerFrameState
 {
   /// 匹配触发沿的 MCU 陀螺仪时间戳，单位 us
   /// MCU gyroscope timestamp matching the trigger edge, in us
@@ -134,6 +138,12 @@ struct AimerPreviewFrame
   /// 本帧发射许可输出
   /// Fire permission output of this frame
   AimerHostFireNotify host_fire{};
+  /// 本帧是否控制云台
+  /// Whether the gimbal is commanded in this frame
+  bool control{false};
+  /// 本帧云台目标输出
+  /// Gimbal target output of this frame
+  AimerHostGimbalTarget host_gimbal{};
 };
 
 /**
@@ -191,6 +201,24 @@ struct AimerConfig
   /// 弹速低于该值时改用 default_bullet_speed，单位 m/s
   /// default_bullet_speed is used when the bullet speed is below this value, in m/s
   double min_valid_bullet_speed{14.0};
+  /// 是否使用裁判系统 0x0207 的实测弹速；有效读数不足 bullet_speed_min_samples 发时
+  /// 使用 default_bullet_speed
+  /// Whether the measured bullet speed of referee 0x0207 is used; default_bullet_speed is
+  /// used until bullet_speed_min_samples valid readings have arrived
+  bool referee_bullet_speed{true};
+  /// 实测弹速平滑窗口的发数，限制在 1 到 32
+  /// Number of shots in the measured-speed smoothing window, limited to 1 to 32
+  int bullet_speed_window{9};
+  /// 使用实测弹速所需的最少有效读数
+  /// Minimum number of valid readings before the measured speed is used
+  int bullet_speed_min_samples{3};
+  /// 实测弹速的有效上限，单位 m/s；有效下限为 min_valid_bullet_speed
+  /// Upper bound of a valid measured speed, in m/s; the lower bound is
+  /// min_valid_bullet_speed
+  double max_valid_bullet_speed{35.0};
+  /// 实测弹速离群门限的下限，单位 m/s
+  /// Floor of the outlier gate of the measured speed, in m/s
+  double bullet_speed_outlier_m_s{0.5};
   /// 二次阻力加速度系数，a_drag = -k * |v| * v
   /// Quadratic drag acceleration coefficient, a_drag = -k * |v| * v
   double ballistic_drag_k{0.02};
@@ -224,7 +252,7 @@ struct AimerConfig
   /// 从开火命令到弹丸出膛的延迟，决定开火采样点，单位 s
   /// Delay from the fire command to the projectile leaving the barrel, determines the
   /// fire sampling point, in s
-  double fire_delay_s{0.0};
+  double fire_delay_s{0.02};
   /// 低速目标的额外预测时间，单位 s
   /// Extra prediction time for low-speed targets, in s
   double low_speed_extra_predict_s{0.015};
@@ -267,11 +295,6 @@ struct AimerConfig
   /// TinyMPC roll 轴加速度代价
   /// TinyMPC roll-axis acceleration cost
   double r_roll_acc{1.0};
-  /// Aimer 内置实时预览的运行参数
-  /// Runtime parameters of the built-in live preview of Aimer
-  VisionPreview::RuntimeParam preview{.preview_window_name = "aimer_preview",
-                                      .preview_scale = 0.5,
-                                      .web_stream_name = "aimer_preview"};
   /// 是否输出运行期统计日志
   /// Whether the runtime statistics log is output
   bool enable_runtime_log{true};
@@ -290,6 +313,92 @@ struct AimerConfig
   /// Name of the referee Topic in the host domain, non-empty; copied and subscribed at
   /// construction
   std::string_view referee_topic{"robot_game_ref"};
+  /// 是否按热量分配开火：估计每次开火的命中概率，只在概率高于随热量升高的门槛时开火；
+  /// 需要裁判系统给出热量上限和冷却值，未收到时不生效
+  /// Whether heat-aware firing is enabled: the hit probability of each fire opportunity
+  /// is estimated and the shot is fired only above a threshold that rises with heat;
+  /// requires the heat limit and cooling value from the referee and is inactive without
+  /// them
+  bool heat_aware_fire{false};
+  /// 热量为 0 时开火所需的命中概率
+  /// Hit probability required to fire at zero heat
+  double heat_fire_p_low{0.55};
+  /// 热量达到上限时开火所需的命中概率
+  /// Hit probability required to fire at the heat limit
+  double heat_fire_p_high{0.85};
+  /// 热量低于上限一半且长时间未开火时，门槛放宽到的下限
+  /// Lower bound the threshold is relaxed to when the heat is below half the limit and
+  /// no shot was fired for a while
+  double heat_fire_p_floor{0.3};
+  /// 开始放宽门槛前允许的不开火时间，单位 s
+  /// Time without a shot before the threshold starts to relax, in s
+  double heat_fire_relax_s{0.5};
+  /// 命中概率模型的基础横向标准差，单位 m
+  /// Base lateral standard deviation of the hit-probability model, in m
+  double heat_fire_sigma_m{0.01};
+  /// 装甲板相位预测标准差随预测时域的增长率，单位 rad/s
+  /// Growth rate of the plate-phase prediction standard deviation with the horizon, in
+  /// rad/s
+  double heat_fire_phase_sigma_rad_s{0.7};
+  /// 加在弹丸飞行时间上的预测时域，覆盖开火指令到出膛的延迟，单位 s
+  /// Horizon added to the flight time, covering the delay from the fire command to the
+  /// muzzle, in s
+  double heat_fire_horizon_extra_s{0.05};
+  /// 单发热量，17 mm 弹丸为 10
+  /// Heat per shot, 10 for 17 mm projectiles
+  double heat_fire_shot_heat{10.0};
+  /// 发射机构相邻两发的最小间隔，单位 s
+  /// Minimum interval between two shots of the launcher, in s
+  double heat_fire_min_interval_s{0.05};
+  /// 出膛时仍保留的请求时刻云台误差比例；1 表示按请求时刻误差估计
+  /// Share of the request-time gimbal error that remains at the muzzle exit; 1 uses the
+  /// request-time error as it is
+  double heat_fire_gimbal_error_gain{0.65};
+  /// 横向偏差中与指令 yaw 角速度成正比的时间，单位 s
+  /// Time multiplied by the command yaw rate in the lateral offset, in s
+  double heat_fire_rate_bias_s{0.01};
+  /// 横向标准差中与指令 yaw 角速度成正比的时间，单位 s
+  /// Time multiplied by the command yaw rate in the lateral standard deviation, in s
+  double heat_fire_rate_spread_s{0.01};
+  /// 是否用裁判系统 0x0202 的实测枪管热量修正本地热量估计；最近一包裁判摘要早于
+  /// referee_heat_timeout_s 时只用本地估计
+  /// Whether the local heat estimate is corrected with the barrel heat measured by referee
+  /// 0x0202; only the local estimate is used when the latest referee summary is older than
+  /// referee_heat_timeout_s
+  bool referee_heat{true};
+  /// 实测热量有效的最长时间，单位 s
+  /// Longest time a measured heat stays valid, in s
+  double referee_heat_timeout_s{0.5};
+  /// 实测热量可能尚未计入的出弹时间窗，单位 s，覆盖 0x0202 的发送周期和出弹延迟
+  /// Time window of shots the measured heat may not include yet, in s, covering the
+  /// 0x0202 period and the launch delay
+  double referee_heat_window_s{0.15};
+  /// 使用 42 mm 发射机构的热量；否则使用 17 mm 发射机构的热量
+  /// Use the heat of the 42 mm launcher; otherwise that of the 17 mm launcher
+  bool referee_heat_42mm{false};
+  /// 是否把 0x0204 的冷却增益加到 0x0201 的每秒冷却值上
+  /// Whether the cooling buff of 0x0204 is added to the cooling per second of 0x0201
+  bool referee_cooling_add_buff{false};
+  /// 是否在线标定指向超前量：用之后的帧检查云台指向，修正预测延迟，收敛后固定
+  /// Whether the pointing lead is calibrated online: the gimbal pointing is checked
+  /// against later frames, the prediction delay is corrected and frozen once calibrated
+  bool lead_calibration{false};
+  /// 固定前的修正批数
+  /// Number of correcting batches before the correction is frozen
+  int lead_calibration_batches{5};
+  /// 修正量绝对值上限，单位 s
+  /// Limit of the absolute correction, in s
+  double lead_calibration_max_adjust_s{0.05};
+  /// 固定后触发重新标定的超前时间，单位 s
+  /// Lead time that triggers a recalibration once frozen, in s
+  double lead_calibration_monitor_threshold_s{0.003};
+  /// 触发重新标定所需的同向连续批数
+  /// Consecutive same-sign batches that trigger a recalibration
+  int lead_calibration_monitor_batches{3};
+  /// 参与超前量标定的最大目标水平距离，单位 m；更远时飞行时间内的目标机动主导残差
+  /// Largest horizontal target distance used for the lead calibration, in m; farther away
+  /// the target maneuver during the flight dominates the residual
+  double lead_calibration_max_distance_m{4.0};
 };
 
 /**
@@ -301,7 +410,7 @@ class AimerCore
 {
  public:
   using Config = AimerConfig;
-  using PreviewSink = void (*)(void*, const AimerPreviewFrame&);
+  using FrameSink = void (*)(void*, const AimerFrameState&);
 
   /**
    * @brief 创建 Aimer 运行核心，初始化 TinyMPC 求解器并订阅 host 域的裁判 Topic。
@@ -321,15 +430,15 @@ class AimerCore
 
  protected:
   /**
-   * @brief 设置接收每帧预览状态的回调。
-   *        Set the callback that receives the preview state of each frame.
+   * @brief 设置接收每帧状态的回调。
+   *        Set the callback that receives the state of each frame.
    *
-   * @param sink 预览状态回调。
-   *             Preview state callback.
+   * @param sink 每帧状态回调。
+   *             Per-frame state callback.
    * @param context 传给回调的第一个参数。
    *                First argument passed to the callback.
    */
-  void SetPreviewSink(PreviewSink sink, void* context);
+  void SetFrameSink(FrameSink sink, void* context);
   /**
    * @brief 使用 tracker 同帧 IMU 更新当前云台姿态。
    *        Update the current gimbal attitude from the same-frame IMU of the tracker.
@@ -427,13 +536,13 @@ class AimerCore
    */
   void GimbalRotationCallback(LibXR::Quaternion<float> gimbal_rotation_msg);
   /**
-   * @brief 把本帧 Aimer 状态交给内置预览。
-   *        Hand the Aimer state of this frame to the built-in preview.
+   * @brief 把本帧 Aimer 状态交给每帧状态回调。
+   *        Hand the Aimer state of this frame to the per-frame state callback.
    *
-   * @param state 本帧预览状态。
-   *              Preview state of this frame.
+   * @param state 本帧状态。
+   *              State of this frame.
    */
-  void PublishPreviewState(const AimerPreviewFrame& state);
+  void PublishFrameState(const AimerFrameState& state);
   /**
    * @brief 根据命令稳定性和云台两轴对准情况评估自动开火门控。
    *        Evaluate the automatic fire gating from the command stability and the
@@ -452,6 +561,53 @@ class AimerCore
    */
   bool ShouldAutoFire(const AimerShotCandidate& shot_candidate, bool plan_fire_enabled,
                       double yaw, double roll);
+  /**
+   * @brief 在已有开火门控之后应用按热量分配的开火判定，并维护本地热量估计。
+   *        Apply the heat-aware fire decision after the existing fire gates and keep the
+   *        local heat estimate.
+   *
+   * @param shot_candidate 当前发射对应的未来命中候选。
+   *                       Future hit candidate of the current shot.
+   * @param gimbal_error_yaw 实测云台 yaw 减命令 yaw，单位 rad。
+   *                         Measured gimbal yaw minus the command yaw, in rad.
+   * @param command_yaw_rate 命令 yaw 角速度，单位 rad/s。
+   *                         Command yaw rate, in rad/s.
+   * @param gates_passed 已有开火门控是否全部通过。
+   *                     Whether all existing fire gates pass.
+   * @return 最终是否开火。
+   *         Whether the shot is finally fired.
+   */
+  bool HeatAwareFire(const AimerShotCandidate& shot_candidate, double gimbal_error_yaw,
+                     double command_yaw_rate, bool gates_passed);
+  /**
+   * @brief 用最近一包裁判摘要的实测热量修正本地热量估计；实测值超过
+   *        referee_heat_timeout_s 时不修正。
+   *        Correct the local heat estimate with the measured heat of the latest referee
+   *        summary; no correction when the measurement is older than
+   *        referee_heat_timeout_s.
+   *
+   * @param now_us 当前图像时刻，单位 us。
+   *               Current image time, in us.
+   * @param cooling 每秒冷却值。
+   *                Cooling per second.
+   */
+  void FuseRefereeHeat(uint64_t now_us, double cooling);
+  /**
+   * @brief 在线标定指向超前量：记录本帧云台指向，用本帧观测检查此前各帧的指向，按批
+   *        修正预测延迟。
+   *        Online calibration of the pointing lead: record the gimbal pointing of this
+   *        frame, check the pointing of earlier frames against this observation and
+   *        correct the prediction delay in batches.
+   *
+   * @param target_msg 当前 tracker 目标。
+   *                   Current tracker target.
+   * @param command_in_force 上一帧是否发出了云台指令。
+   *                         Whether a gimbal command was issued for the previous frame.
+   * @param command_yaw_rate 当前生效指令的 yaw 角速度，单位 rad/s。
+   *                         Yaw rate of the command in force, in rad/s.
+   */
+  void UpdateLeadCalibration(const ArmorTrackerTarget& target_msg, bool command_in_force,
+                             double command_yaw_rate);
   /**
    * @brief 初始化 yaw 和 roll 轴 TinyMPC 求解器。
    *        Initialize the yaw and roll-axis TinyMPC solvers.
@@ -535,6 +691,12 @@ class AimerCore
   bool has_last_command_{false};
   double last_command_yaw_{0.0};
   double last_command_roll_{0.0};
+  /// 上一帧命令的 yaw、roll 角速度和图像时间，用于判断命令是否稳定
+  /// Yaw and roll rates and image time of the previous command, for the command stability
+  /// check
+  double last_command_yaw_vel_{0.0};
+  double last_command_roll_vel_{0.0};
+  uint64_t last_command_image_us_{0};
   bool has_gimbal_rotation_{false};
   LibXR::Quaternion<double> gimbal_rotation_{1.0, 0.0, 0.0, 0.0};
   bool planner_ready_{false};
@@ -548,12 +710,62 @@ class AimerCore
   double last_logged_heat_{0.0};
   double last_logged_heat_limit_{0.0};
   double last_logged_cooling_{0.0};
+  /// 裁判系统给出的热量上限，未收到时为 0
+  /// Heat limit from the referee, 0 until received
+  std::atomic<double> referee_heat_limit_{0.0};
+  /// 裁判系统给出的每秒冷却值
+  /// Cooling per second from the referee
+  std::atomic<double> referee_cooling_{0.0};
+  /// 按热量分配开火使用的本地热量估计
+  /// Local heat estimate of the heat-aware firing
+  AimerDetail::HeatFireState heat_fire_state_{};
+  /// 最近一包裁判摘要中的实测热量和该包的接收时刻（host 时基，单位 us）
+  /// Measured heat of the latest referee summary and its arrival time (host timebase, in
+  /// us)
+  struct RefereeHeatSample
+  {
+    bool valid{false};
+    double heat{0.0};
+    uint64_t receive_us{0};
+  };
+  LibXR::Mutex referee_heat_lock_;
+  RefereeHeatSample referee_heat_sample_{};
+  /// 实测弹速平滑，只在裁判回调中访问
+  /// Measured-speed smoothing, accessed only in the referee callback
+  AimerDetail::BulletSpeedFilter bullet_speed_filter_;
+  /// 是否已收到过裁判摘要，及其中最近的 0x0207 计数
+  /// Whether a referee summary has been received, and its latest 0x0207 count
+  bool have_shot_seq_{false};
+  uint16_t last_shot_seq_{0};
+  /// 当前处理帧的图像时间戳，单位 us
+  /// Image timestamp of the frame being processed, in us
+  uint64_t current_image_us_{0};
+  /// 当前目标的装甲半径，单位 m
+  /// Armor radius of the current target, in m
+  double current_target_radius_{0.2};
+  /// 上一帧是否在跟踪目标，用于判断开始跟踪的时刻
+  /// Whether a target was tracked in the previous frame, to detect the start of tracking
+  bool heat_fire_tracking_{false};
+  /// 等待到达时刻观测的指向样本
+  /// Pointing sample waiting for the observation at its arrival time
+  struct LeadSample
+  {
+    uint64_t arrival_us;
+    double gimbal_yaw;
+    double command_yaw_rate;
+  };
+  /// 指向超前量的在线标定
+  /// Online calibration of the pointing lead
+  AimerDetail::LeadCalibrator lead_calibrator_;
+  /// 等待到达时刻观测的指向样本，按到达时刻排序
+  /// Pointing samples waiting for the observation at their arrival time, in arrival order
+  std::deque<LeadSample> lead_pending_{};
   TinySolver* yaw_solver_{nullptr};
   TinySolver* roll_solver_{nullptr};
   mutable LibXR::Mutex gimbal_rotation_lock_{};
   mutable LibXR::Mutex runtime_log_lock_{};
-  PreviewSink preview_sink_{nullptr};
-  void* preview_context_{nullptr};
+  FrameSink frame_sink_{nullptr};
+  void* frame_context_{nullptr};
 
   GimbalPlan gimbal_plan_msg_{};
 
@@ -565,138 +777,62 @@ class AimerCore
 };
 
 #include "AimerImpl.hpp"
-#include "AimerPreview.hpp"
 
 /**
- * @brief Aimer 模块：订阅 tracker 的 target_frame，发布云台目标与发射许可，内置预览。
- *        Aimer Module: subscribes to the tracker target_frame, publishes the gimbal
- *        target and the fire permission, and provides a built-in preview.
+ * @brief Aimer 模块：订阅 `<相机名>_tracked`，发布云台目标、发射许可与 `<相机名>_aimed`。
+ *        Aimer Module: subscribes to `<camera>_tracked`, publishes the gimbal target, the
+ *        fire permission and `<camera>_aimed`.
  *
- * @tparam FrameLayoutV 帧布局，与上游相机和 ArmorTracker 相同。
- *                      Frame layout, identical to the upstream camera and ArmorTracker.
+ * 在跟踪器的发布线程里同步处理，每收一帧发一帧。
+ * Runs synchronously in the tracker's publishing thread, one frame out per frame in.
  */
-template <CameraTypes::FrameLayout FrameLayoutV>
 class Aimer : public AimerCore
 {
  public:
   using Config = AimerConfig;
-  using CameraCalibration = CameraTypes::CameraCalibration;
-  using TargetFrame = TrackedFrame<FrameLayoutV>;
-  using TargetFrameMessage = TrackedFrameMessage<FrameLayoutV>;
 
-  /**
-   * @brief 返回全部取默认值的配置。
-   *        Return the configuration holding all defaults.
-   *
-   * 预览默认关闭，窗口名为 `aimer_preview`，缩放为 0.5，Web 流名为 `aimer_preview`。
-   * The preview is disabled by default, with window name `aimer_preview`, scale 0.5 and
-   * web stream name `aimer_preview`.
-   *
-   * @return 默认配置。
-   *         Default configuration.
-   */
+  /// 全部取默认值的配置 / Configuration holding all defaults.
   static Config DefaultConfig() { return {}; }
 
   /**
-   * @brief 返回默认相机标定：1280x720，fx = fy = 800，主点 (640, 360)，零畸变。
-   *        Return the default camera calibration: 1280x720, fx = fy = 800, principal
-   *        point (640, 360), zero distortion.
-   *
-   * @return 默认相机标定。
-   *         Default camera calibration.
+   * @param camera_name 相机名，决定订阅与发布的 Topic / Camera name, selects the Topics
+   * @param cfg 运行时配置 / Runtime configuration
    */
-  static CameraCalibration DefaultCalibration()
+  explicit Aimer(std::string camera_name, Config cfg = {})
+      : AimerCore(cfg),
+        camera_name_(std::move(camera_name)),
+        aimed_topic_(LibXR::Topic::CreateTopic<const AutoAim::AimedFrame*>(
+            StageTopicName(camera_name_, AutoAim::STAGE_AIMED).c_str()))
   {
-    return {.native_width = 1280,
-            .native_height = 720,
-            .camera_matrix = {800.0, 0.0, 640.0, 0.0, 800.0, 360.0, 0.0, 0.0, 1.0},
-            .distortion_model = CameraTypes::DistortionModel::PLUMB_BOB,
-            .distortion_coefficients = {0.0, 0.0, 0.0, 0.0, 0.0},
-            .rectification_matrix = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0},
-            .projection_matrix = {800.0, 0.0, 640.0, 0.0, 0.0, 800.0, 360.0, 0.0, 0.0,
-                                  0.0, 1.0, 0.0}};
-  }
-
-  /**
-   * @brief 构造 Aimer，持有原生相机标定，并订阅 tracker 域的 target_frame。
-   *        Construct Aimer, hold the native camera calibration and subscribe to the
-   *        target_frame of the tracker domain.
-   *
-   * @param cfg 运行时配置。
-   *            Runtime configuration.
-   * @param calibration 原生传感器坐标系下的相机标定，用于预览投影，按值持有。
-   *                    Camera calibration in the native sensor frame used for the preview
-   *                    projection, held by value.
-   */
-  Aimer(Config cfg = DefaultConfig(),
-        CameraCalibration calibration = DefaultCalibration())
-      : AimerCore(cfg), calibration_(std::move(calibration))
-  {
-    ASSERT(CameraBaseIntrinsicSanity::CameraCalibrationReasonable(calibration_));
-    if (cfg.preview.enabled)
-    {
-      preview_.emplace(AimerDetail::MakeAimerPreviewConfig(cfg), calibration_);
-      SetPreviewSink([](void* context, const AimerPreviewFrame& frame)
-                     { static_cast<Aimer*>(context)->SubmitPreviewFrame(frame); }, this);
-    }
-    RegisterTargetFrameCallback();
+    SetFrameSink([](void* context, const AimerFrameState& state)
+                 { static_cast<Aimer*>(context)->state_ = state; }, this);
+    auto on_tracked = LibXR::Topic::Callback::Create(
+        [](bool, Aimer* self, const AutoAim::TrackedFrame* frame)
+        { self->OnTracked(*frame); }, this);
+    AutoAim::RequireTopic<const AutoAim::TrackedFrame*>(
+        StageTopicName(camera_name_, AutoAim::STAGE_TRACKED))
+        .RegisterCallback(on_tracked);
   }
 
  private:
-  /**
-   * @brief 订阅 tracker/target_frame。
-   *        Subscribe to tracker/target_frame.
-   */
-  void RegisterTargetFrameCallback()
+  void OnTracked(const AutoAim::TrackedFrame& frame)
   {
-    LibXR::Topic::Domain tracker_domain("tracker");
-    target_frame_topic_ =
-        LibXR::Topic::FindOrCreate<TargetFrameMessage>("target_frame", &tracker_domain);
-    auto callback = LibXR::Topic::Callback::Create(
-        [](bool, Aimer* self, const TargetFrameMessage& message)
-        {
-          if (message == nullptr || !message->Valid())
-          {
-            return;
-          }
-          self->TargetFrameCallback(*message);
-        },
-        this);
-    target_frame_topic_.RegisterCallback(callback);
-  }
-
-  /**
-   * @brief 处理 tracker 同帧的目标与源图像。
-   *        Handle the target and the source image of the same tracker frame.
-   *
-   * @param frame 目标帧。
-   *              Target frame.
-   */
-  void TargetFrameCallback(const TargetFrame& frame)
-  {
-    current_target_frame_ = &frame;
-    UpdateGimbalRotationFromSyncedImu(frame.imu.rotation_wxyz);
+    state_ = {};
+    UpdateGimbalRotationFromSyncedImu(frame.detected.synced.imu.rotation_wxyz);
     TargetCallback(frame.target);
-    current_target_frame_ = nullptr;
+    AutoAim::AimedFrame aimed{frame, {}};
+    AutoAim::AimResult& aim = aimed.aim;
+    aim.control = state_.control;
+    aim.fire = state_.host_fire.isfire;
+    aim.yaw = state_.host_gimbal.yaw;
+    aim.pitch = state_.host_gimbal.pit;
+    aim.aim_point = state_.aim_point_valid ? state_.aim_point : Eigen::Vector3d::Zero();
+    aim.plate = state_.aim_point_valid ? state_.aim_armor_index : -1;
+    const AutoAim::AimedFrame* payload = &aimed;
+    aimed_topic_.Publish(payload);
   }
 
-  /**
-   * @brief 把 AimerCore 生成的预览状态交给内置预览。
-   *        Hand the preview state generated by AimerCore to the built-in preview.
-   *
-   * @param frame 预览状态。
-   *              Preview state.
-   */
-  void SubmitPreviewFrame(const AimerPreviewFrame& frame)
-  {
-    if (preview_.has_value())
-    {
-      preview_->OnAimerFrame(frame, current_target_frame_);
-    }
-  }
-
-  LibXR::Topic target_frame_topic_ = LibXR::Topic();
-  const TargetFrame* current_target_frame_{nullptr};
-  const CameraCalibration calibration_;
-  std::optional<AimerPreview<FrameLayoutV>> preview_;
+  std::string camera_name_;
+  LibXR::Topic aimed_topic_;
+  AimerFrameState state_{};
 };

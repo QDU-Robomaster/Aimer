@@ -118,13 +118,7 @@ struct PredictedTarget
     {
       const double face_yaw =
           LimitRad(msg.yaw + index * 2.0 * PI / msg.armors_num);
-      double center_angle = face_yaw;
-      if (msg.id == ArmorNumber::OUTPOST && msg.armors_num == 3)
-      {
-        // Tracker outpost output publishes face yaw. The physical armor center
-        // on the ring is shifted by pi from that face normal.
-        center_angle = LimitRad(face_yaw - PI);
-      }
+      const double center_angle = face_yaw;
       const bool use_length_height = (msg.armors_num == 4) && (index == 1 || index == 3);
       const double radius = use_length_height ? msg.radius_2 : msg.radius_1;
       const double armor_x = msg.position.x() + radius * std::sin(center_angle);
